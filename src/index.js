@@ -126,6 +126,12 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
   const OUTPUT_WIDTH = 500;
   const OUTPUT_HEIGHT = 750;
 
+  // Workers AI requires dimensions divisible by 8
+  const INFER_WIDTH = 504;
+  const INFER_HEIGHT = 752;
+  const PAD_X = 2;
+  const PAD_Y = 1;
+
   const uploadEl = document.getElementById('upload');
   const generateBtn = document.getElementById('generateBtn');
   const resetBtn = document.getElementById('resetBtn');
@@ -216,6 +222,7 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     const { width, height, data } = imageData;
     const total = width * height;
     const gray = new Float32Array(total);
+
     for (let i = 0, p = 0; i < data.length; i += 4, p++) {
       gray[p] = getLuma(data[i], data[i + 1], data[i + 2]);
     }
@@ -535,15 +542,13 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
       const merged = mergeBoxes(textBoxes, settings.mergeXGap, settings.mergeYGap);
       const mask = fillBoxesToMask(merged, width, height, settings.padX, settings.padY);
 
-      const maskPixels = countMaskPixels(mask);
       bestMask = mask;
 
-      if (maskPixels > totalPixels * 0.004) {
+      if (countMaskPixels(mask) > totalPixels * 0.004) {
         break;
       }
     }
 
-    // Slightly thicken the final mask so antialiased glyph edges are also removed.
     return dilateBinaryMap(bestMask, width, height, 1);
   }
 
@@ -563,49 +568,71 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     ctx.putImageData(imageData, 0, 0);
   }
 
-  async function compositeFinalImage(originalCanvas, inpaintedBlob, maskCanvas) {
-    const originalCtx = originalCanvas.getContext('2d', { willReadFrequently: true });
-    const originalData = originalCtx.getImageData(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
-
-    const inpaintedImg = await imageBlobToImage(inpaintedBlob);
-    const inpaintCanvas = document.createElement('canvas');
-    inpaintCanvas.width = OUTPUT_WIDTH;
-    inpaintCanvas.height = OUTPUT_HEIGHT;
-    const inpaintCtx = inpaintCanvas.getContext('2d', { willReadFrequently: true });
-    inpaintCtx.drawImage(inpaintedImg, 0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
-    const inpaintedData = inpaintCtx.getImageData(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
-
-    const featherCanvas = document.createElement('canvas');
-    featherCanvas.width = OUTPUT_WIDTH;
-    featherCanvas.height = OUTPUT_HEIGHT;
-    const featherCtx = featherCanvas.getContext('2d', { willReadFrequently: true });
-    featherCtx.clearRect(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
-    featherCtx.filter = 'blur(2px)';
-    featherCtx.drawImage(maskCanvas, 0, 0);
-    featherCtx.filter = 'none';
-    const featherData = featherCtx.getImageData(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT).data;
-
+  function buildPaddedCanvasFromCanvas(sourceCanvas, outWidth, outHeight, padX, padY, fillBlack = false) {
     const outCanvas = document.createElement('canvas');
-    outCanvas.width = OUTPUT_WIDTH;
-    outCanvas.height = OUTPUT_HEIGHT;
-    const outCtx = outCanvas.getContext('2d', { willReadFrequently: true });
-    const outData = outCtx.createImageData(OUTPUT_WIDTH, OUTPUT_HEIGHT);
+    outCanvas.width = outWidth;
+    outCanvas.height = outHeight;
 
-    for (let i = 0, p = 0; i < outData.data.length; i += 4, p++) {
-      const alpha = featherData[i] / 255;
+    const ctx = outCanvas.getContext('2d', { willReadFrequently: true });
 
-      const r = Math.round(originalData.data[i] * (1 - alpha) + inpaintedData.data[i] * alpha);
-      const g = Math.round(originalData.data[i + 1] * (1 - alpha) + inpaintedData.data[i + 1] * alpha);
-      const b = Math.round(originalData.data[i + 2] * (1 - alpha) + inpaintedData.data[i + 2] * alpha);
-
-      outData.data[i] = r;
-      outData.data[i + 1] = g;
-      outData.data[i + 2] = b;
-      outData.data[i + 3] = 255;
+    if (fillBlack) {
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, outWidth, outHeight);
+    } else {
+      ctx.clearRect(0, 0, outWidth, outHeight);
     }
 
-    outCtx.putImageData(outData, 0, 0);
-    return canvasToBlob(outCanvas, 'image/png');
+    const sw = sourceCanvas.width;
+    const sh = sourceCanvas.height;
+
+    // Center draw
+    ctx.drawImage(sourceCanvas, padX, padY);
+
+    // Edge extension so the extra pixels are not empty shells.
+    if (padX > 0) {
+      // Left strip
+      ctx.drawImage(sourceCanvas, 0, 0, 1, sh, 0, padY, padX, sh);
+      // Right strip
+      ctx.drawImage(sourceCanvas, sw - 1, 0, 1, sh, padX + sw, padY, outWidth - (padX + sw), sh);
+    }
+
+    if (padY > 0) {
+      // Top strip
+      ctx.drawImage(sourceCanvas, 0, 0, sw, 1, 0, 0, outWidth, padY);
+      // Bottom strip
+      ctx.drawImage(sourceCanvas, 0, sh - 1, sw, 1, 0, padY + sh, outWidth, outHeight - (padY + sh));
+    }
+
+    return outCanvas;
+  }
+
+  async function cropResultToOutputSize(resultBlob) {
+    const resultImg = await imageBlobToImage(resultBlob);
+    const inferCanvas = document.createElement('canvas');
+    inferCanvas.width = INFER_WIDTH;
+    inferCanvas.height = INFER_HEIGHT;
+
+    const inferCtx = inferCanvas.getContext('2d', { willReadFrequently: true });
+    inferCtx.drawImage(resultImg, 0, 0, INFER_WIDTH, INFER_HEIGHT);
+
+    const finalCanvas = document.createElement('canvas');
+    finalCanvas.width = OUTPUT_WIDTH;
+    finalCanvas.height = OUTPUT_HEIGHT;
+
+    const finalCtx = finalCanvas.getContext('2d', { willReadFrequently: true });
+    finalCtx.drawImage(
+      inferCanvas,
+      PAD_X,
+      PAD_Y,
+      OUTPUT_WIDTH,
+      OUTPUT_HEIGHT,
+      0,
+      0,
+      OUTPUT_WIDTH,
+      OUTPUT_HEIGHT
+    );
+
+    return canvasToBlob(finalCanvas, 'image/png');
   }
 
   async function processPoster() {
@@ -627,11 +654,16 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
       const mask = buildTextMask(imageData);
 
       maskToCanvas(mask, OUTPUT_WIDTH, OUTPUT_HEIGHT, maskPreviewCanvas);
-      const maskBlob = await canvasToBlob(maskPreviewCanvas, 'image/png');
+
+      const paddedImageCanvas = buildPaddedCanvasFromCanvas(imgCanvas, INFER_WIDTH, INFER_HEIGHT, PAD_X, PAD_Y, false);
+      const paddedMaskCanvas = buildPaddedCanvasFromCanvas(maskPreviewCanvas, INFER_WIDTH, INFER_HEIGHT, PAD_X, PAD_Y, true);
+
+      const paddedImageBlob = await canvasToBlob(paddedImageCanvas, 'image/png');
+      const paddedMaskBlob = await canvasToBlob(paddedMaskCanvas, 'image/png');
 
       const formData = new FormData();
-      formData.append('image', originalBlob, 'poster.png');
-      formData.append('mask', maskBlob, 'mask.png');
+      formData.append('image', paddedImageBlob, 'poster.png');
+      formData.append('mask', paddedMaskBlob, 'mask.png');
 
       setLoading(true, 'Inpainting masked text with Workers AI...');
 
@@ -645,7 +677,7 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
       }
 
       const inpaintedBlob = await res.blob();
-      const finalBlob = await compositeFinalImage(imgCanvas, inpaintedBlob, maskPreviewCanvas);
+      const finalBlob = await cropResultToOutputSize(inpaintedBlob);
 
       revokeResultUrl();
       currentObjectUrl = URL.createObjectURL(finalBlob);
@@ -703,7 +735,6 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     uploadEl.value = '';
   });
 
-  // Optional starter state
   imgCtx.fillStyle = '#e5e7eb';
   imgCtx.fillRect(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
   imgCtx.fillStyle = '#94a3b8';
@@ -714,6 +745,37 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
 </script>
 </body>
 </html>`;
+
+function buildPrompt() {
+  return [
+    'Remove all text from the masked regions and reconstruct the original poster artwork underneath.',
+    'Preserve the exact subject, faces, pose, clothing, composition, lighting, and background structure.',
+    'Do not redesign the poster or introduce a new scene.'
+  ].join(' ');
+}
+
+function buildNegativePrompt() {
+  return [
+    'text',
+    'letters',
+    'words',
+    'typography',
+    'logo',
+    'watermark',
+    'signature',
+    'subtitle',
+    'credits',
+    'poster redesign',
+    'face change',
+    'pose change',
+    'new person',
+    'extra object',
+    'curtain',
+    'drape',
+    'fabric',
+    'wallpaper'
+  ].join(', ');
+}
 
 export default {
   async fetch(request, env) {
@@ -739,12 +801,12 @@ export default {
         const maskBuffer = await maskFile.arrayBuffer();
 
         const inputs = {
-          prompt: 'Remove all text from the masked regions and reconstruct the original poster artwork underneath. Preserve the exact subject, faces, pose, clothing, composition, lighting, and background structure. Do not redesign the poster or introduce a new scene.',
-          negative_prompt: 'text, letters, words, typography, logo, watermark, signature, subtitle, credits, poster redesign, face change, pose change, new person, extra object, curtain, drape, fabric, wallpaper',
+          prompt: buildPrompt(),
+          negative_prompt: buildNegativePrompt(),
           image: Array.from(new Uint8Array(imageBuffer)),
           mask: Array.from(new Uint8Array(maskBuffer)),
-          width: 500,
-          height: 750,
+          width: 504,
+          height: 752,
           num_steps: 20,
           strength: 0.65,
           guidance: 4.25
