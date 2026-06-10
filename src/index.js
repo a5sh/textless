@@ -37,8 +37,7 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
   }
   .mini-preview {
     width: 100%;
-    max-width: 220px;
-    height: 330px;
+    height: 220px;
   }
   .status-dot {
     width: 10px;
@@ -64,14 +63,45 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     font-size: .75rem;
     font-weight: 700;
   }
+  .results-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 2rem;
+  }
+  .result-card {
+    text-align: center;
+  }
+  .result-card h3 {
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: #1e293b;
+    margin-bottom: 0.5rem;
+  }
+  .result-card p {
+    font-size: 0.75rem;
+    color: #64748b;
+    margin-bottom: 0.5rem;
+  }
+  .result-pair {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+  }
+  .result-pair > div {
+    flex: 1;
+  }
+  .result-pair p {
+    font-size: 0.7rem;
+    margin-bottom: 0.25rem;
+  }
 </style>
 </head>
 <body class="min-h-screen text-slate-900 p-6 md:p-8 font-sans">
-  <div class="max-w-4xl mx-auto bg-white/90 backdrop-blur border border-slate-200 rounded-3xl shadow-xl p-6 md:p-8">
+  <div class="max-w-7xl mx-auto bg-white/90 backdrop-blur border border-slate-200 rounded-3xl shadow-xl p-6 md:p-8">
     <div class="text-center mb-7">
       <h1 class="text-3xl md:text-4xl font-black tracking-tight text-slate-900">Textless Poster Generator</h1>
       <p class="mt-2 text-slate-600">
-        Aggressive text detection with multi-engine masking, then Workers AI inpainting.
+        Triple-algorithm detection with parallel inpainting. Compare 3 different approaches simultaneously.
       </p>
     </div>
 
@@ -92,7 +122,7 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
           id="generateBtn"
           class="w-full px-6 py-3.5 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 disabled:bg-indigo-300 transition shadow-md shadow-indigo-200"
         >
-          Generate Textless Poster
+          Generate 3 Results
         </button>
 
         <button
@@ -105,23 +135,59 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
 
       <div id="loading" class="hidden mt-5 text-indigo-700 font-semibold flex items-center gap-3">
         <div class="status-dot"></div>
-        <span id="loadingText">Detecting text regions...</span>
+        <span id="loadingText">Detecting text with 3 algorithms...</span>
       </div>
-
-      <div id="diagnostics" class="hidden mt-4 flex flex-wrap gap-2 justify-center"></div>
 
       <div id="errorMsg" class="hidden mt-4 text-red-600 font-semibold text-sm text-center max-w-2xl"></div>
 
       <div id="previewSection" class="hidden w-full mt-8">
-        <div class="grid gap-4 md:grid-cols-2">
-          <div class="text-center">
-            <p class="mb-2 text-sm font-semibold text-slate-600">Aggressive Text Mask</p>
-            <canvas id="maskPreviewCanvas" width="500" height="750" class="mini-preview mx-auto"></canvas>
+        <div class="results-grid">
+          <div class="result-card">
+            <h3>Algorithm A: Contrast</h3>
+            <div class="result-pair">
+              <div>
+                <p>Mask</p>
+                <canvas id="maskA" width="500" height="750" class="mini-preview mx-auto"></canvas>
+              </div>
+            </div>
+            <p>High-contrast text detection</p>
+            <p>Aggressive on light text</p>
+            <div>
+              <p style="margin-top: 1rem;">Result</p>
+              <img id="resultA" class="preview-image mini-preview mx-auto" alt="Algorithm A result" />
+            </div>
           </div>
 
-          <div class="text-center">
-            <p class="mb-2 text-sm font-semibold text-slate-600">Final Result</p>
-            <img id="resultImg" class="preview-image mini-preview mx-auto" alt="Generated textless poster" />
+          <div class="result-card">
+            <h3>Algorithm B: Edge (Sobel)</h3>
+            <div class="result-pair">
+              <div>
+                <p>Mask</p>
+                <canvas id="maskB" width="500" height="750" class="mini-preview mx-auto"></canvas>
+              </div>
+            </div>
+            <p>Edge magnitude detection</p>
+            <p>Crisp text boundaries</p>
+            <div>
+              <p style="margin-top: 1rem;">Result</p>
+              <img id="resultB" class="preview-image mini-preview mx-auto" alt="Algorithm B result" />
+            </div>
+          </div>
+
+          <div class="result-card">
+            <h3>Algorithm C: Brightness Diff</h3>
+            <div class="result-pair">
+              <div>
+                <p>Mask</p>
+                <canvas id="maskC" width="500" height="750" class="mini-preview mx-auto"></canvas>
+              </div>
+            </div>
+            <p>Local brightness variance</p>
+            <p>Good for varied backgrounds</p>
+            <div>
+              <p style="margin-top: 1rem;">Result</p>
+              <img id="resultC" class="preview-image mini-preview mx-auto" alt="Algorithm C result" />
+            </div>
           </div>
         </div>
       </div>
@@ -144,17 +210,12 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
   const loadingTextEl = document.getElementById('loadingText');
   const errorMsgEl = document.getElementById('errorMsg');
   const previewSectionEl = document.getElementById('previewSection');
-  const resultImgEl = document.getElementById('resultImg');
-  const diagnosticsEl = document.getElementById('diagnostics');
 
   const imgCanvas = document.getElementById('imgCanvas');
   const imgCtx = imgCanvas.getContext('2d', { willReadFrequently: true });
 
-  const maskPreviewCanvas = document.getElementById('maskPreviewCanvas');
-
   let currentFile = null;
   let isProcessing = false;
-  let currentObjectUrl = null;
 
   function showError(message) {
     errorMsgEl.textContent = message;
@@ -172,13 +233,6 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     generateBtn.disabled = state;
     uploadEl.disabled = state;
     resetBtn.disabled = state;
-  }
-
-  function revokeResultUrl() {
-    if (currentObjectUrl) {
-      URL.revokeObjectURL(currentObjectUrl);
-      currentObjectUrl = null;
-    }
   }
 
   function clamp(v, min, max) {
@@ -272,9 +326,7 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
 
   function sobelMagnitude(gray, width, height) {
     const out = new Float32Array(width * height);
-    let sum = 0;
-    let sumSq = 0;
-    let count = 0;
+    let sum = 0, sumSq = 0, count = 0;
 
     for (let y = 1; y < height - 1; y++) {
       const row = y * width;
@@ -424,88 +476,6 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     return mask;
   }
 
-  function sumMask(mask) {
-    let c = 0;
-    for (let i = 0; i < mask.length; i++) c += mask[i] ? 1 : 0;
-    return c;
-  }
-
-  function drawMaskToCanvas(mask, width, height, canvas) {
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    const imageData = ctx.createImageData(width, height);
-    for (let i = 0; i < mask.length; i++) {
-      const v = mask[i] ? 255 : 0;
-      const p = i * 4;
-      imageData.data[p] = v;
-      imageData.data[p + 1] = v;
-      imageData.data[p + 2] = v;
-      imageData.data[p + 3] = 255;
-    }
-    ctx.putImageData(imageData, 0, 0);
-  }
-
-  function maskBorderPenalty(mask, width, height) {
-    let border = 0, total = 0;
-    for (let y = 0; y < height; y++) {
-      const row = y * width;
-      for (let x = 0; x < width; x++) {
-        if (!mask[row + x]) continue;
-        total++;
-        if (x < 6 || x >= width - 6 || y < 6 || y >= height - 6) border++;
-      }
-    }
-    return total ? border / total : 1;
-  }
-
-  function centroid(mask, width, height) {
-    let sx = 0, sy = 0, count = 0;
-    for (let y = 0; y < height; y++) {
-      const row = y * width;
-      for (let x = 0; x < width; x++) {
-        if (!mask[row + x]) continue;
-        sx += x;
-        sy += y;
-        count++;
-      }
-    }
-    if (!count) return { x: 0.5, y: 0.5, count: 0 };
-    return { x: sx / count / width, y: sy / count / height, count };
-  }
-
-  function scoreMask(mask, width, height) {
-    const total = sumMask(mask);
-    const cover = total / (width * height);
-    const c = centroid(mask, width, height);
-
-    let bottom = 0, center = 0, upper = 0;
-    for (let y = 0; y < height; y++) {
-      const row = y * width;
-      for (let x = 0; x < width; x++) {
-        if (!mask[row + x]) continue;
-        if (y > height * 0.48) bottom++;
-        if (x > width * 0.12 && x < width * 0.88) center++;
-        if (y < height * 0.18) upper++;
-      }
-    }
-
-    const border = maskBorderPenalty(mask, width, height);
-    const components = extractComponents(mask, width, height);
-    const medium = components.filter(comp => comp.area >= 20 && comp.area <= width * height * 0.03).length;
-    const wide = components.filter(comp => (comp.maxX - comp.minX + 1) / Math.max(1, (comp.maxY - comp.minY + 1)) > 1.3).length;
-
-    let s = 0;
-    s += Math.max(0, 2.5 - Math.abs(cover - 0.055) * 25);
-    s += (bottom / Math.max(1, total)) * 2.5;
-    s += (center / Math.max(1, total)) * 1.2;
-    s += medium * 0.35;
-    s += wide * 0.25;
-    s += c.y > 0.45 ? 0.8 : 0;
-    s += c.y > 0.60 ? 0.8 : 0;
-    s -= border * 2.0;
-    s -= upper / Math.max(1, total) * 1.5;
-    return s;
-  }
-
   function buildMaskFromScoreMap(scoreMap, width, height, threshold, minAreaRatio = 0.00008) {
     const binary = thresholdMap(scoreMap, width, height, threshold);
     let mask = close(open(binary, width, height, 1), width, height, 1);
@@ -529,7 +499,22 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     return mask;
   }
 
-  function detectorAContrast(gray, width, height) {
+  function drawMaskToCanvas(mask, width, height, canvas) {
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const imageData = ctx.createImageData(width, height);
+    for (let i = 0; i < mask.length; i++) {
+      const v = mask[i] ? 255 : 0;
+      const p = i * 4;
+      imageData.data[p] = v;
+      imageData.data[p + 1] = v;
+      imageData.data[p + 2] = v;
+      imageData.data[p + 3] = 255;
+    }
+    ctx.putImageData(imageData, 0, 0);
+  }
+
+  // Algorithm A: Contrast-based
+  function detectorA(gray, width, height) {
     const blur = boxBlur(gray, width, height, 6);
     const score = new Float32Array(width * height);
     let sum = 0, sumSq = 0;
@@ -550,11 +535,33 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     return buildMaskFromScoreMap(score, width, height, thresh);
   }
 
-  function detectorBSobel(gray, width, height) {
+  // Algorithm B: Sobel Edge Detection
+  function detectorB(gray, width, height) {
     const sob = sobelMagnitude(gray, width, height);
     const blursob = boxBlur(sob.map, width, height, 2);
     const thresh = sob.mean + sob.std * 1.1;
     return buildMaskFromScoreMap(blursob, width, height, thresh, 0.0001);
+  }
+
+  // Algorithm C: Brightness Differential
+  function detectorC(gray, width, height) {
+    const blur = boxBlur(gray, width, height, 12);
+    const score = new Float32Array(width * height);
+    let sum = 0, sumSq = 0;
+
+    for (let i = 0; i < score.length; i++) {
+      const diff = Math.abs(gray[i] - blur[i]);
+      const y = Math.floor(i / width) / height;
+      const bandBoost = y > 0.50 ? 15 : y > 0.35 ? 8 : 0;
+      score[i] = diff * 1.0 + bandBoost;
+      sum += score[i];
+      sumSq += score[i] * score[i];
+    }
+
+    const mean = sum / score.length;
+    const std = Math.sqrt(Math.max(0, (sumSq / score.length) - mean * mean));
+    const thresh = mean + std * 1.2;
+    return buildMaskFromScoreMap(score, width, height, thresh, 0.00005);
   }
 
   uploadEl.addEventListener('change', async (e) => {
@@ -587,88 +594,70 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     if (!currentFile || isProcessing) return;
     isProcessing = true;
     clearError();
-    revokeResultUrl();
-    diagnosticsEl.innerHTML = '';
-    diagnosticsEl.classList.add('hidden');
 
     try {
-      setLoading(true, 'Running structural analysis models...');
+      setLoading(true, 'Detecting text with Algorithm A (Contrast)...');
       const sourceData = imgCtx.getImageData(0, 0, W, H);
       const gray = makeGray(sourceData);
 
-      const maskA = detectorAContrast(gray, W, H);
-      const maskB = detectorBSobel(gray, W, H);
+      const maskA = detectorA(gray, W, H);
+      drawMaskToCanvas(maskA, W, H, document.getElementById('maskA'));
 
-      const scoreA = scoreMask(maskA, W, H);
-      const scoreB = scoreMask(maskB, W, H);
+      setLoading(true, 'Detecting text with Algorithm B (Sobel)...');
+      const maskB = detectorB(gray, W, H);
+      drawMaskToCanvas(maskB, W, H, document.getElementById('maskB'));
 
-      diagnosticsEl.classList.remove('hidden');
-      
-      const itemA = document.createElement('span');
-      itemA.className = 'badge';
-      itemA.textContent = 'Engine A Score: ' + scoreA.toFixed(2);
-      diagnosticsEl.appendChild(itemA);
+      setLoading(true, 'Detecting text with Algorithm C (Brightness Diff)...');
+      const maskC = detectorC(gray, W, H);
+      drawMaskToCanvas(maskC, W, H, document.getElementById('maskC'));
 
-      const itemB = document.createElement('span');
-      itemB.className = 'badge';
-      itemB.textContent = 'Engine B Score: ' + scoreB.toFixed(2);
-      diagnosticsEl.appendChild(itemB);
+      setLoading(true, 'Running 3 inpainting processes in parallel...');
 
-      let chosenMask = scoreA >= scoreB ? maskA : maskB;
-      if (sumMask(chosenMask) === 0) {
-        chosenMask = maskA; 
-      }
+      const imageBlob = await new Promise(resolve => imgCanvas.toBlob(resolve, 'image/jpeg', 0.92));
 
-      drawMaskToCanvas(chosenMask, W, H, maskPreviewCanvas);
+      const processInpaint = async (maskCanvas, resultImgId) => {
+        const maskBlob = await canvasToBlob(maskCanvas, 'image/png');
 
-      setLoading(true, 'Compressing canvases for inference layout...');
-      
-      const inferCanvas = document.createElement('canvas');
-      inferCanvas.width = INFER_W;
-      inferCanvas.height = INFER_H;
-      const inferCtx = inferCanvas.getContext('2d');
-      inferCtx.fillStyle = '#000000';
-      inferCtx.fillRect(0, 0, INFER_W, INFER_H);
-      inferCtx.drawImage(imgCanvas, PAD_X, PAD_Y, W, H);
-      const imageBlob = await canvasToBlob(inferCanvas, 'image/jpeg', 0.92);
+        const formData = new FormData();
+        formData.append('image', imageBlob);
+        formData.append('mask', maskBlob);
 
-      const inferMaskCanvas = document.createElement('canvas');
-      inferMaskCanvas.width = INFER_W;
-      inferMaskCanvas.height = INFER_H;
-      const inferMaskCtx = inferMaskCanvas.getContext('2d');
-      inferMaskCtx.fillStyle = '#000000';
-      inferMaskCtx.fillRect(0, 0, INFER_W, INFER_H);
-      inferMaskCtx.drawImage(maskPreviewCanvas, PAD_X, PAD_Y, W, H);
-      const maskBlob = await canvasToBlob(inferMaskCanvas, 'image/png');
+        const response = await fetch('/api/inpainting', {
+          method: 'POST',
+          body: formData
+        });
 
-      setLoading(true, 'Transmitting context frames to Workers AI Inpainter...');
+        if (!response.ok) throw new Error('Inpainting failed: ' + response.status);
 
-      const formData = new FormData();
-      formData.append('image', imageBlob, 'source.jpg');
-      formData.append('mask', maskBlob, 'mask.png');
+        const resultBlob = await response.blob();
+        const resultImg = await imageBlobToImage(resultBlob);
 
-      const response = await fetch('/api/inpainting', {
-        method: 'POST',
-        body: formData
-      });
+        const cleanCanvas = document.createElement('canvas');
+        cleanCanvas.width = W;
+        cleanCanvas.height = H;
+        const cleanCtx = cleanCanvas.getContext('2d');
 
-      if (!response.ok) {
-        const textErr = await response.text();
-        throw new Error('Upstream Engine Failure (' + response.status + '): ' + textErr);
-      }
+        const inferCanvas = document.createElement('canvas');
+        inferCanvas.width = INFER_W;
+        inferCanvas.height = INFER_H;
+        const inferCtx = inferCanvas.getContext('2d');
+        inferCtx.fillStyle = '#000000';
+        inferCtx.fillRect(0, 0, INFER_W, INFER_H);
+        inferCtx.drawImage(maskCanvas, PAD_X, PAD_Y, W, H);
+        const padding = await canvasToBlob(inferCanvas);
+        const paddedImg = await imageBlobToImage(padding);
 
-      const responseBlob = await response.blob();
-      const outputImg = await imageBlobToImage(responseBlob);
+        cleanCtx.drawImage(resultImg, -PAD_X, -PAD_Y, INFER_W, INFER_H);
+        const finalBlob = await canvasToBlob(cleanCanvas, 'image/jpeg', 0.95);
+        document.getElementById(resultImgId).src = URL.createObjectURL(finalBlob);
+      };
 
-      const cleanCanvas = document.createElement('canvas');
-      cleanCanvas.width = W;
-      cleanCanvas.height = H;
-      const cleanCtx = cleanCanvas.getContext('2d');
-      cleanCtx.drawImage(outputImg, -PAD_X, -PAD_Y, INFER_W, INFER_H);
-
-      const finalBlob = await canvasToBlob(cleanCanvas, 'image/jpeg', 0.95);
-      currentObjectUrl = URL.createObjectURL(finalBlob);
-      resultImgEl.src = currentObjectUrl;
+      // Run all 3 inpaints in parallel
+      await Promise.all([
+        processInpaint(document.getElementById('maskA'), 'resultA'),
+        processInpaint(document.getElementById('maskB'), 'resultB'),
+        processInpaint(document.getElementById('maskC'), 'resultC')
+      ]);
 
       previewSectionEl.classList.remove('hidden');
     } catch (err) {
@@ -683,9 +672,6 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     uploadEl.value = '';
     currentFile = null;
     clearError();
-    revokeResultUrl();
-    diagnosticsEl.innerHTML = '';
-    diagnosticsEl.classList.add('hidden');
     previewSectionEl.classList.add('hidden');
     imgCtx.clearRect(0, 0, W, H);
   });
