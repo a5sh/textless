@@ -66,7 +66,7 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     <div class="text-center mb-7">
       <h1 class="text-3xl md:text-4xl font-black tracking-tight text-slate-900">Textless Poster Generator</h1>
       <p class="mt-2 text-slate-600">
-        Upload a text-heavy movie poster. The worker removes text using conservative auto-detection and Cloudflare Workers AI inpainting.
+        Upload a text-heavy movie poster. AI detects text regions, then Workers AI inpaints only those regions.
       </p>
     </div>
 
@@ -100,7 +100,7 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
 
       <div id="loading" class="hidden mt-5 text-indigo-700 font-semibold flex items-center gap-3">
         <div class="status-dot"></div>
-        <span id="loadingText">Detecting text regions...</span>
+        <span id="loadingText">Detecting text regions with AI...</span>
       </div>
 
       <div id="errorMsg" class="hidden mt-4 text-red-600 font-semibold text-sm text-center max-w-2xl"></div>
@@ -126,11 +126,14 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
   const OUTPUT_WIDTH = 500;
   const OUTPUT_HEIGHT = 750;
 
-  // Workers AI inpainting needs dimensions divisible by 8
+  // Workers AI inpainting needs dimensions divisible by 8.
   const INFER_WIDTH = 504;
   const INFER_HEIGHT = 752;
   const PAD_X = 2;
   const PAD_Y = 1;
+
+  const AI_DETECT_MODEL = '@cf/meta/llama-4-scout-17b-16e-instruct';
+  const AI_INPAINT_MODEL = '@cf/runwayml/stable-diffusion-v1-5-inpainting';
 
   const uploadEl = document.getElementById('upload');
   const generateBtn = document.getElementById('generateBtn');
@@ -161,7 +164,7 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     errorMsgEl.classList.add('hidden');
   }
 
-  function setLoading(state, text = 'Detecting text regions...') {
+  function setLoading(state, text = 'Detecting text regions with AI...') {
     loadingTextEl.textContent = text;
     loadingEl.classList.toggle('hidden', !state);
     generateBtn.disabled = state;
@@ -218,439 +221,116 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     return 0.299 * r + 0.587 * g + 0.114 * b;
   }
 
-  function boxBlur(gray, width, height, radius) {
-    const out = new Float32Array(width * height);
-    const tmp = new Float32Array(width * height);
-
-    // Horizontal pass
-    for (let y = 0; y < height; y++) {
-      const row = y * width;
-      let sum = 0;
-      for (let x = -radius; x <= radius; x++) {
-        const clampedX = Math.max(0, Math.min(width - 1, x));
-        sum += gray[row + clampedX];
-      }
-      for (let x = 0; x < width; x++) {
-        tmp[row + x] = sum / (radius * 2 + 1);
-        const removeX = Math.max(0, x - radius);
-        const addX = Math.min(width - 1, x + radius + 1);
-        sum += gray[row + addX] - gray[row + removeX];
-      }
-    }
-
-    // Vertical pass
-    for (let x = 0; x < width; x++) {
-      let sum = 0;
-      for (let y = -radius; y <= radius; y++) {
-        const clampedY = Math.max(0, Math.min(height - 1, y));
-        sum += tmp[clampedY * width + x];
-      }
-      for (let y = 0; y < height; y++) {
-        out[y * width + x] = sum / (radius * 2 + 1);
-        const removeY = Math.max(0, y - radius);
-        const addY = Math.min(height - 1, y + radius + 1);
-        sum += tmp[addY * width + x] - tmp[removeY * width + x];
-      }
-    }
-
-    return out;
+  function clamp(v, min, max) {
+    return Math.max(min, Math.min(max, v));
   }
 
-  function computeEdges(imageData) {
-    const { width, height, data } = imageData;
-    const total = width * height;
-    const gray = new Float32Array(total);
+  function arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    const chunkSize = 0x8000;
 
-    for (let i = 0, p = 0; i < data.length; i += 4, p++) {
-      gray[p] = getLuma(data[i], data[i + 1], data[i + 2]);
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
     }
 
-    const edges = new Float32Array(total);
-    let sum = 0;
-    let sumSq = 0;
-    let count = 0;
+    return btoa(binary);
+  }
 
-    for (let y = 1; y < height - 1; y++) {
-      const row = y * width;
-      for (let x = 1; x < width - 1; x++) {
-        const idx = row + x;
+  function blobToDataUrl(blob) {
+    return blob.arrayBuffer().then((buffer) => {
+      const base64 = arrayBufferToBase64(buffer);
+      const mime = blob.type || 'image/png';
+      return `data:${mime};base64,${base64}`;
+    });
+  }
 
-        const a = gray[idx - width - 1];
-        const b = gray[idx - width];
-        const c = gray[idx - width + 1];
-        const d = gray[idx - 1];
-        const f = gray[idx + 1];
-        const g = gray[idx + width - 1];
-        const h = gray[idx + width];
-        const i = gray[idx + width + 1];
+  function parseJsonFromModel(raw) {
+    if (!raw) return null;
+    if (typeof raw === 'object') return raw;
 
-        const gx = (-a) + (-2 * d) + (-g) + c + (2 * f) + i;
-        const gy = (-a) + (-2 * b) + (-c) + g + (2 * h) + i;
-        const mag = Math.hypot(gx, gy);
+    let text = String(raw).trim();
 
-        edges[idx] = mag;
-        sum += mag;
-        sumSq += mag * mag;
-        count++;
+    text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+
+    try {
+      return JSON.parse(text);
+    } catch {
+      const match = text.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+      if (!match) return null;
+      try {
+        return JSON.parse(match[0]);
+      } catch {
+        return null;
       }
     }
-
-    const mean = sum / Math.max(1, count);
-    const variance = Math.max(0, sumSq / Math.max(1, count) - mean * mean);
-    const std = Math.sqrt(variance);
-
-    return { gray, edges, mean, std };
   }
 
-  function dilateBinaryMap(map, width, height, passes = 1) {
-    let current = map;
+  function normalizeRegions(payload, width, height) {
+    const regions = Array.isArray(payload?.regions) ? payload.regions : [];
+    const cleaned = [];
 
-    for (let pass = 0; pass < passes; pass++) {
-      const next = new Uint8Array(width * height);
+    for (const r of regions) {
+      const x = Math.round(Number(r?.x));
+      const y = Math.round(Number(r?.y));
+      const w = Math.round(Number(r?.w));
+      const h = Math.round(Number(r?.h));
+      const confidence = Number.isFinite(Number(r?.confidence)) ? Number(r.confidence) : 1;
 
-      for (let y = 1; y < height - 1; y++) {
-        const row = y * width;
-        for (let x = 1; x < width - 1; x++) {
-          const idx = row + x;
-          let on = 0;
+      if (![x, y, w, h].every(Number.isFinite)) continue;
+      if (confidence < 0.2) continue;
 
-          for (let dy = -1; dy <= 1 && !on; dy++) {
-            const ny = y + dy;
-            const nRow = ny * width;
-            for (let dx = -1; dx <= 1; dx++) {
-              if (current[nRow + x + dx]) {
-                on = 1;
-                break;
-              }
-            }
-          }
+      const nx = clamp(x, 0, width - 1);
+      const ny = clamp(y, 0, height - 1);
+      const nw = clamp(w, 1, width - nx);
+      const nh = clamp(h, 1, height - ny);
 
-          next[idx] = on;
-        }
-      }
+      const areaRatio = (nw * nh) / (width * height);
+      if (areaRatio < 0.00005) continue;
+      if (areaRatio > 0.18) continue;
+      if (nw < 3 || nh < 3) continue;
 
-      current = next;
+      cleaned.push({
+        x: nx,
+        y: ny,
+        w: nw,
+        h: nh,
+        confidence: Math.max(0, Math.min(1, confidence)),
+        label: typeof r?.label === 'string' ? r.label : 'text'
+      });
     }
 
-    return current;
+    return cleaned;
   }
 
-  function erodeBinaryMap(map, width, height, passes = 1) {
-    let current = map;
-
-    for (let pass = 0; pass < passes; pass++) {
-      const next = new Uint8Array(width * height);
-
-      for (let y = 1; y < height - 1; y++) {
-        const row = y * width;
-        for (let x = 1; x < width - 1; x++) {
-          const idx = row + x;
-          let keep = 1;
-
-          for (let dy = -1; dy <= 1 && keep; dy++) {
-            const ny = y + dy;
-            const nRow = ny * width;
-            for (let dx = -1; dx <= 1; dx++) {
-              if (!current[nRow + x + dx]) {
-                keep = 0;
-                break;
-              }
-            }
-          }
-
-          next[idx] = keep;
-        }
-      }
-
-      current = next;
-    }
-
-    return current;
-  }
-
-  function extractComponents(binary, edgeMap, width, height) {
-    const visited = new Uint8Array(width * height);
-    const components = [];
-    const stack = [];
-
-    for (let y = 0; y < height; y++) {
-      const row = y * width;
-      for (let x = 0; x < width; x++) {
-        const start = row + x;
-        if (!binary[start] || visited[start]) continue;
-
-        visited[start] = 1;
-        stack.length = 0;
-        stack.push(start);
-
-        let area = 0;
-        let minX = x;
-        let minY = y;
-        let maxX = x;
-        let maxY = y;
-        let edgeSum = 0;
-
-        while (stack.length) {
-          const idx = stack.pop();
-          const px = idx % width;
-          const py = (idx / width) | 0;
-
-          area++;
-          edgeSum += edgeMap[idx];
-          if (px < minX) minX = px;
-          if (py < minY) minY = py;
-          if (px > maxX) maxX = px;
-          if (py > maxY) maxY = py;
-
-          for (let dy = -1; dy <= 1; dy++) {
-            const ny = py + dy;
-            if (ny < 0 || ny >= height) continue;
-            const nRow = ny * width;
-            for (let dx = -1; dx <= 1; dx++) {
-              const nx = px + dx;
-              if (nx < 0 || nx >= width) continue;
-              const nIdx = nRow + nx;
-              if (!binary[nIdx] || visited[nIdx]) continue;
-              visited[nIdx] = 1;
-              stack.push(nIdx);
-            }
-          }
-        }
-
-        components.push({
-          area,
-          minX,
-          minY,
-          maxX,
-          maxY,
-          edgeSum
-        });
-      }
-    }
-
-    return components;
-  }
-
-  function componentLooksLikeText(component, width, height, edgeMean, edgeStd, settings) {
-    const boxW = component.maxX - component.minX + 1;
-    const boxH = component.maxY - component.minY + 1;
-    const boxArea = Math.max(1, boxW * boxH);
-    const fill = component.area / boxArea;
-    const aspect = boxW / Math.max(1, boxH);
-    const edgeDensity = component.edgeSum / Math.max(1, component.area);
-    const edgeRel = edgeDensity / Math.max(1e-6, edgeMean + edgeStd * 0.5);
-    const centerY = (component.minY + component.maxY) * 0.5 / height;
-    const areaRatio = component.area / (width * height);
-
-    let score = 0;
-
-    if (areaRatio >= settings.minAreaRatio && areaRatio <= settings.maxAreaRatio) score++;
-    if (fill >= settings.minFill && fill <= settings.maxFill) score++;
-    if (edgeRel >= settings.minEdgeRel) score++;
-    if (boxW >= settings.minBoxW && boxH >= settings.minBoxH) score++;
-    if (aspect >= settings.minAspect && aspect <= settings.maxAspect) score++;
-    if (boxH <= height * settings.maxHeightRatio) score++;
-    if (centerY >= settings.preferredLowerBand) score++;
-
-    if (centerY < settings.upperRejectBand) score -= 1;
-    if (boxH > height * 0.18 && aspect < 0.20) score -= 2;
-    if (boxH > height * 0.28) score -= 3;
-
-    return score >= settings.minScore;
-  }
-
-  function boxesClose(a, b, xGap, yGap) {
-    const horizontalGap = Math.max(0, Math.max(a.minX, b.minX) - Math.min(a.maxX, b.maxX) - 1);
-    const verticalGap = Math.max(0, Math.max(a.minY, b.minY) - Math.min(a.maxY, b.maxY) - 1);
-    return horizontalGap <= xGap && verticalGap <= yGap;
-  }
-
-  function mergeBoxes(boxes, xGap, yGap) {
-    let current = boxes.map(box => ({ ...box }));
-    let changed = true;
-
-    while (changed) {
-      changed = false;
-      current.sort((a, b) => a.minY - b.minY || a.minX - b.minX);
-
-      const next = [];
-      for (const box of current) {
-        let merged = false;
-
-        for (const target of next) {
-          if (boxesClose(target, box, xGap, yGap)) {
-            target.minX = Math.min(target.minX, box.minX);
-            target.minY = Math.min(target.minY, box.minY);
-            target.maxX = Math.max(target.maxX, box.maxX);
-            target.maxY = Math.max(target.maxY, box.maxY);
-            merged = true;
-            changed = true;
-            break;
-          }
-        }
-
-        if (!merged) next.push({ ...box });
-      }
-
-      current = next;
-    }
-
-    return current;
-  }
-
-  function fillBoxesToMask(boxes, width, height, padX, padY) {
-    const mask = new Uint8Array(width * height);
-
-    for (const box of boxes) {
-      const minX = Math.max(0, box.minX - padX);
-      const minY = Math.max(0, box.minY - padY);
-      const maxX = Math.min(width - 1, box.maxX + padX);
-      const maxY = Math.min(height - 1, box.maxY + padY);
-
-      for (let y = minY; y <= maxY; y++) {
-        const row = y * width;
-        for (let x = minX; x <= maxX; x++) {
-          mask[row + x] = 255;
-        }
-      }
-    }
-
-    return mask;
-  }
-
-  function countMaskPixels(mask) {
-    let count = 0;
-    for (let i = 0; i < mask.length; i++) {
-      if (mask[i]) count++;
-    }
-    return count;
-  }
-
-  function buildTextMask(imageData) {
-    const { width, height } = imageData;
-    const totalPixels = width * height;
-
-    const { gray, edges, mean: edgeMean, std: edgeStd } = computeEdges(imageData);
-
-    // Local-contrast map: text tends to be compact, high-contrast, and layered over background.
-    const blurA = boxBlur(gray, width, height, 6);
-    const blurB = boxBlur(gray, width, height, 12);
-
-    const contrast = new Float32Array(totalPixels);
-    let cSum = 0;
-    let cSumSq = 0;
-    for (let i = 0; i < totalPixels; i++) {
-      const d1 = Math.abs(gray[i] - blurA[i]);
-      const d2 = Math.abs(gray[i] - blurB[i]);
-      const v = Math.max(d1, d2);
-      contrast[i] = v;
-      cSum += v;
-      cSumSq += v * v;
-    }
-
-    const cMean = cSum / totalPixels;
-    const cVar = Math.max(0, cSumSq / totalPixels - cMean * cMean);
-    const cStd = Math.sqrt(cVar);
-
-    const candidates = new Uint8Array(totalPixels);
-
-    const detailThreshold = cMean + 1.85 * cStd;
-    const edgeThreshold = edgeMean + 1.90 * edgeStd;
-
-    for (let i = 0; i < totalPixels; i++) {
-      const isContrast = contrast[i] >= detailThreshold;
-      const isEdge = edges[i] >= edgeThreshold;
-      candidates[i] = (isContrast || isEdge) ? 1 : 0;
-    }
-
-    let working = dilateBinaryMap(candidates, width, height, 1);
-    working = erodeBinaryMap(working, width, height, 1);
-
-    const components = extractComponents(working, edges, width, height);
-
-    const settings = {
-      minAreaRatio: 0.00002,
-      maxAreaRatio: 0.055,
-      minFill: 0.035,
-      maxFill: 0.88,
-      minEdgeRel: 0.84,
-      minBoxW: 6,
-      minBoxH: 4,
-      minAspect: 0.09,
-      maxAspect: 14,
-      maxHeightRatio: 0.30,
-      preferredLowerBand: 0.28,
-      upperRejectBand: 0.18,
-      minScore: 4,
-      padX: 5,
-      padY: 4,
-      mergeXGap: 18,
-      mergeYGap: 12
-    };
-
-    const textBoxes = [];
-    for (const comp of components) {
-      if (componentLooksLikeText(comp, width, height, edgeMean, edgeStd, settings)) {
-        textBoxes.push(comp);
-      }
-    }
-
-    const merged = mergeBoxes(textBoxes, settings.mergeXGap, settings.mergeYGap);
-    let mask = fillBoxesToMask(merged, width, height, settings.padX, settings.padY);
-
-    // Final cleanup to remove very thin vertical artifacts from fire escapes / railings.
-    mask = dilateBinaryMap(erodeBinaryMap(mask, width, height, 1), width, height, 1);
-
-    // Fallback: if detection gets too timid, soften the threshold once.
-    const maskPixels = countMaskPixels(mask);
-    if (maskPixels < totalPixels * 0.004) {
-      const fallback = new Uint8Array(totalPixels);
-      const fallbackThreshold = cMean + 1.45 * cStd;
-
-      for (let i = 0; i < totalPixels; i++) {
-        fallback[i] = contrast[i] >= fallbackThreshold ? 1 : 0;
-      }
-
-      let fallbackWork = dilateBinaryMap(fallback, width, height, 1);
-      fallbackWork = erodeBinaryMap(fallbackWork, width, height, 1);
-      const fallbackComponents = extractComponents(fallbackWork, edges, width, height);
-
-      const fallbackBoxes = [];
-      for (const comp of fallbackComponents) {
-        const looseSettings = {
-          ...settings,
-          minScore: 3,
-          maxHeightRatio: 0.34,
-          preferredLowerBand: 0.24,
-          upperRejectBand: 0.14
-        };
-        if (componentLooksLikeText(comp, width, height, edgeMean, edgeStd, looseSettings)) {
-          fallbackBoxes.push(comp);
-        }
-      }
-
-      const fallbackMerged = mergeBoxes(fallbackBoxes, 20, 14);
-      mask = fillBoxesToMask(fallbackMerged, width, height, 6, 5);
-      mask = dilateBinaryMap(erodeBinaryMap(mask, width, height, 1), width, height, 1);
-    }
-
-    return mask;
-  }
-
-  function maskToCanvas(mask, width, height, canvas) {
+  function drawRegionsToMask(regions, width, height, canvas) {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    const imageData = ctx.createImageData(width, height);
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, width, height);
 
-    for (let i = 0; i < mask.length; i++) {
-      const v = mask[i];
-      const p = i * 4;
-      imageData.data[p] = v;
-      imageData.data[p + 1] = v;
-      imageData.data[p + 2] = v;
-      imageData.data[p + 3] = 255;
+    ctx.fillStyle = '#fff';
+
+    for (const region of regions) {
+      const padX = region.w < 30 ? 8 : 6;
+      const padY = region.h < 18 ? 6 : 4;
+      const x = clamp(region.x - padX, 0, width - 1);
+      const y = clamp(region.y - padY, 0, height - 1);
+      const w = clamp(region.w + padX * 2, 1, width - x);
+      const h = clamp(region.h + padY * 2, 1, height - y);
+      ctx.fillRect(x, y, w, h);
     }
 
-    ctx.putImageData(imageData, 0, 0);
+    const temp = document.createElement('canvas');
+    temp.width = width;
+    temp.height = height;
+    const tctx = temp.getContext('2d', { willReadFrequently: true });
+    tctx.filter = 'blur(2px)';
+    tctx.drawImage(canvas, 0, 0);
+    tctx.filter = 'none';
+
+    ctx.clearRect(0, 0, width, height);
+    ctx.drawImage(temp, 0, 0);
   }
 
   function buildPaddedCanvasFromCanvas(sourceCanvas, outWidth, outHeight, padX, padY, fillBlack = false) {
@@ -683,6 +363,24 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     }
 
     return outCanvas;
+  }
+
+  async function analyzeTextRegions() {
+    const imageBlob = await canvasToBlob(imgCanvas, 'image/png');
+    const formData = new FormData();
+    formData.append('image', imageBlob, 'poster.png');
+
+    const res = await fetch('/api/analyze', {
+      method: 'POST',
+      body: formData
+    });
+
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+
+    const data = await res.json();
+    return Array.isArray(data.regions) ? data.regions : [];
   }
 
   async function compositeFinalImage(originalCanvas, inpaintedBlob, maskCanvas) {
@@ -725,6 +423,23 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     return canvasToBlob(finalCanvas, 'image/png');
   }
 
+  async function inpaintPoster(imageBlob, maskBlob) {
+    const formData = new FormData();
+    formData.append('image', imageBlob, 'poster.png');
+    formData.append('mask', maskBlob, 'mask.png');
+
+    const res = await fetch('/api/inpaint', {
+      method: 'POST',
+      body: formData
+    });
+
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+
+    return res.blob();
+  }
+
   async function processPoster() {
     if (isProcessing) return;
     if (!currentFile) {
@@ -734,15 +449,18 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
 
     clearError();
     previewSectionEl.classList.add('hidden');
-    setLoading(true, 'Detecting text regions...');
+    setLoading(true, 'AI is locating text regions...');
 
     isProcessing = true;
 
     try {
-      const imageData = imgCtx.getImageData(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
-      const mask = buildTextMask(imageData);
+      const regions = await analyzeTextRegions();
 
-      maskToCanvas(mask, OUTPUT_WIDTH, OUTPUT_HEIGHT, maskPreviewCanvas);
+      if (!regions.length) {
+        throw new Error('AI returned no text regions for this poster.');
+      }
+
+      drawRegionsToMask(regions, OUTPUT_WIDTH, OUTPUT_HEIGHT, maskPreviewCanvas);
 
       const paddedImageCanvas = buildPaddedCanvasFromCanvas(imgCanvas, INFER_WIDTH, INFER_HEIGHT, PAD_X, PAD_Y, false);
       const paddedMaskCanvas = buildPaddedCanvasFromCanvas(maskPreviewCanvas, INFER_WIDTH, INFER_HEIGHT, PAD_X, PAD_Y, true);
@@ -750,22 +468,9 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
       const paddedImageBlob = await canvasToBlob(paddedImageCanvas, 'image/png');
       const paddedMaskBlob = await canvasToBlob(paddedMaskCanvas, 'image/png');
 
-      const formData = new FormData();
-      formData.append('image', paddedImageBlob, 'poster.png');
-      formData.append('mask', paddedMaskBlob, 'mask.png');
+      setLoading(true, 'Inpainting only the detected text regions...');
 
-      setLoading(true, 'Inpainting masked text with Workers AI...');
-
-      const res = await fetch('/api/inpaint', {
-        method: 'POST',
-        body: formData
-      });
-
-      if (!res.ok) {
-        throw new Error(await res.text());
-      }
-
-      const inpaintedBlob = await res.blob();
+      const inpaintedBlob = await inpaintPoster(paddedImageBlob, paddedMaskBlob);
       const finalBlob = await compositeFinalImage(imgCanvas, inpaintedBlob, maskPreviewCanvas);
 
       revokeResultUrl();
@@ -793,7 +498,6 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
         const img = new Image();
         img.onload = async () => {
           drawImageCover(imgCtx, img, OUTPUT_WIDTH, OUTPUT_HEIGHT);
-          await processPoster();
         };
         img.onerror = () => showError('Could not read the image file.');
         img.src = event.target.result;
@@ -822,6 +526,13 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     imgCtx.clearRect(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
     maskPreviewCtx.clearRect(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
     uploadEl.value = '';
+
+    imgCtx.fillStyle = '#e5e7eb';
+    imgCtx.fillRect(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
+    imgCtx.fillStyle = '#94a3b8';
+    imgCtx.font = 'bold 22px system-ui, sans-serif';
+    imgCtx.textAlign = 'center';
+    imgCtx.fillText('Upload a poster to begin', OUTPUT_WIDTH / 2, OUTPUT_HEIGHT / 2);
   });
 
   imgCtx.fillStyle = '#e5e7eb';
@@ -835,35 +546,127 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
 </body>
 </html>`;
 
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 0x8000;
+
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+
+  return btoa(binary);
+}
+
 function buildPrompt() {
   return [
-    'Remove all text from the masked regions and reconstruct the original poster artwork underneath.',
-    'Preserve the exact subject, faces, pose, clothing, composition, lighting, and background structure.',
-    'Do not redesign the poster or introduce a new scene.'
+    'You are detecting printed text regions in a movie poster.',
+    'Return ONLY JSON that matches the schema.',
+    'Find every visible text block: title, actor names, release date, credits, logos, small copy.',
+    'Use tight rectangular boxes around each text block.',
+    'Ignore architectural structures, stair rails, fire escapes, lamp posts, faces, clothing, shadows, and background texture unless they contain actual text.',
+    'Prefer multiple tight boxes over one huge box.',
+    'Use pixel coordinates for a 500x750 image with origin at the top-left.'
   ].join(' ');
 }
 
-function buildNegativePrompt() {
-  return [
-    'text',
-    'letters',
-    'words',
-    'typography',
-    'logo',
-    'watermark',
-    'signature',
-    'subtitle',
-    'credits',
-    'poster redesign',
-    'face change',
-    'pose change',
-    'new person',
-    'extra object',
-    'curtain',
-    'drape',
-    'fabric',
-    'wallpaper'
-  ].join(', ');
+function buildDetectionSchema() {
+  return {
+    type: 'object',
+    properties: {
+      regions: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            x: { type: 'integer' },
+            y: { type: 'integer' },
+            w: { type: 'integer' },
+            h: { type: 'integer' },
+            confidence: { type: 'number' },
+            label: { type: 'string' }
+          },
+          required: ['x', 'y', 'w', 'h']
+        }
+      }
+    },
+    required: ['regions']
+  };
+}
+
+function parseJsonFromModel(raw) {
+  if (!raw) return null;
+  if (typeof raw === 'object') return raw;
+
+  let text = String(raw).trim();
+  text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    const match = text.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+    if (!match) return null;
+    try {
+      return JSON.parse(match[0]);
+    } catch {
+      return null;
+    }
+  }
+}
+
+function normalizeRegions(payload, width, height) {
+  const regions = Array.isArray(payload?.regions) ? payload.regions : [];
+  const cleaned = [];
+
+  for (const r of regions) {
+    const x = Math.round(Number(r?.x));
+    const y = Math.round(Number(r?.y));
+    const w = Math.round(Number(r?.w));
+    const h = Math.round(Number(r?.h));
+    const confidence = Number.isFinite(Number(r?.confidence)) ? Number(r.confidence) : 1;
+
+    if (![x, y, w, h].every(Number.isFinite)) continue;
+    if (confidence < 0.2) continue;
+
+    const nx = clamp(x, 0, width - 1);
+    const ny = clamp(y, 0, height - 1);
+    const nw = clamp(w, 1, width - nx);
+    const nh = clamp(h, 1, height - ny);
+
+    const areaRatio = (nw * nh) / (width * height);
+    if (areaRatio < 0.00005) continue;
+    if (areaRatio > 0.18) continue;
+    if (nw < 3 || nh < 3) continue;
+
+    cleaned.push({
+      x: nx,
+      y: ny,
+      w: nw,
+      h: nh,
+      confidence: Math.max(0, Math.min(1, confidence)),
+      label: typeof r?.label === 'string' ? r.label : 'text'
+    });
+  }
+
+  return cleaned;
+}
+
+function extractAiText(result) {
+  if (!result) return '';
+  if (typeof result === 'string') return result;
+  if (typeof result.response === 'string') return result.response;
+  if (typeof result.result === 'string') return result.result;
+  return JSON.stringify(result);
+}
+
+async function buildDataUrlFromFile(file) {
+  const buffer = await file.arrayBuffer();
+  const mime = file.type || 'image/png';
+  return `data:${mime};base64,${arrayBufferToBase64(buffer)}`;
 }
 
 export default {
@@ -874,6 +677,41 @@ export default {
       return new Response(HTML_CONTENT, {
         headers: { 'Content-Type': 'text/html; charset=utf-8' }
       });
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/analyze') {
+      try {
+        const formData = await request.formData();
+        const imageFile = formData.get('image');
+
+        if (!(imageFile instanceof File)) {
+          return new Response('Missing image payload', { status: 400 });
+        }
+
+        const imageDataUrl = await buildDataUrlFromFile(imageFile);
+
+        const response = await env.AI.run('@cf/meta/llama-4-scout-17b-16e-instruct', {
+          messages: [
+            { role: 'system', content: 'You are a precise computer vision assistant.' },
+            { role: 'user', content: buildPrompt() }
+          ],
+          image: imageDataUrl,
+          guided_json: buildDetectionSchema(),
+          temperature: 0.1,
+          top_p: 0.2,
+          max_tokens: 700
+        });
+
+        const parsed = parseJsonFromModel(extractAiText(response));
+        const regions = normalizeRegions(parsed, 500, 750);
+
+        return Response.json({
+          regions,
+          count: regions.length
+        });
+      } catch (error) {
+        return new Response(error?.message || 'AI detection failed', { status: 500 });
+      }
     }
 
     if (request.method === 'POST' && url.pathname === '/api/inpaint') {
@@ -890,14 +728,14 @@ export default {
         const maskBuffer = await maskFile.arrayBuffer();
 
         const inputs = {
-          prompt: buildPrompt(),
-          negative_prompt: buildNegativePrompt(),
-          image: Array.from(new Uint8Array(imageBuffer)),
-          mask: Array.from(new Uint8Array(maskBuffer)),
+          prompt: 'Remove only the text inside the masked regions and reconstruct the underlying poster artwork. Preserve the exact subject, faces, pose, costume, lighting, color palette, and composition. Do not redesign the image.',
+          negative_prompt: 'text, letters, words, typography, logo, watermark, signature, subtitle, credits, poster redesign, face change, pose change, new person, extra object, curtain, drape, fabric, wallpaper',
+          image: [...new Uint8Array(imageBuffer)],
+          mask: [...new Uint8Array(maskBuffer)],
           width: 504,
           height: 752,
           num_steps: 16,
-          strength: 0.58,
+          strength: 0.55,
           guidance: 4.0
         };
 
