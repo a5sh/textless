@@ -238,12 +238,13 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
   }
 
   function blobToDataUrl(blob) {
-    return blob.arrayBuffer().then((buffer) => {
-      const base64 = arrayBufferToBase64(buffer);
-      const mime = blob.type || 'image/png';
-      return `data:${mime};base64,${base64}`;
-    });
-  }
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
 
   function parseJsonFromModel(raw) {
     if (!raw) return null;
