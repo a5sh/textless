@@ -630,450 +630,151 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     }
 
     const mean = sum / score.length;
-    const std = Math.sqrt(Math.max(0, sumSq / score.length - mean * mean));
-    return buildMaskFromScoreMap(score, width, height, mean + std * 1.0, 0.00006);
+    const std = Math.sqrt(Math.max(0, (sumSq / score.length) - mean * mean));
+    const thresh = mean + std * 1.35;
+    return buildMaskFromScoreMap(score, width, height, thresh);
   }
 
-  function detectorBEdges(gray, width, height) {
-    const { map: edges, mean, std } = sobelMagnitude(gray, width, height);
-    const blur = boxBlur(gray, width, height, 6);
-    const contrast = new Float32Array(width * height);
-    const score = new Float32Array(width * height);
-
-    for (let i = 0; i < score.length; i++) {
-      contrast[i] = Math.abs(gray[i] - blur[i]);
-      const y = Math.floor(i / width) / height;
-      const x = (i % width) / width;
-      const centerBoost = x > 0.10 && x < 0.90 ? 1 : 0.2;
-      const bottomBoost = y > 0.42 ? 10 : 0;
-      score[i] = edges[i] * 1.05 + contrast[i] * 0.95 + bottomBoost + centerBoost;
-    }
-
-    const thr = mean + std * 1.05;
-    let binary = new Uint8Array(width * height);
-    for (let i = 0; i < score.length; i++) {
-      binary[i] = score[i] >= thr ? 1 : 0;
-    }
-
-    binary = close(open(binary, width, height, 1), width, height, 1);
-    const comps = extractComponents(binary, width, height);
-    const keep = [];
-    for (const c of comps) {
-      const boxW = c.maxX - c.minX + 1;
-      const boxH = c.maxY - c.minY + 1;
-      const areaRatio = c.area / (width * height);
-      const aspect = boxW / Math.max(1, boxH);
-      if (areaRatio < 0.00006 || areaRatio > 0.10) continue;
-      if (boxH > height * 0.42) continue;
-      if (aspect < 0.10 && boxH > height * 0.12) continue;
-      keep.push(c);
-    }
-    let mask = fillComponentBoxes(keep, width, height, 6, 4);
-    mask = close(mask, width, height, 1);
-    return mask;
+  function detectorBSobel(gray, width, height) {
+    const sob = sobelMagnitude(gray, width, height);
+    const blursob = boxBlur(sob.map, width, height, 2);
+    const thresh = sob.mean + sob.std * 1.1;
+    return buildMaskFromScoreMap(blursob, width, height, thresh, 0.0001);
   }
 
-  function detectorCRows(gray, width, height) {
-    const blur = boxBlur(gray, width, height, 5);
-    const rowScore = new Float32Array(height);
-    const colScore = new Float32Array(width);
-
-    for (let y = 0; y < height; y++) {
-      let rs = 0;
-      for (let x = 0; x < width; x++) {
-        const idx = y * width + x;
-        const local = Math.abs(gray[idx] - blur[idx]);
-        const bright = gray[idx] > 125 ? (gray[idx] - 125) * 0.15 : 0;
-        const lowerBoost = y > height * 0.46 ? 1.4 : 0.45;
-        const centerBoost = x > width * 0.10 && x < width * 0.90 ? 1 : 0.5;
-        rs += local * lowerBoost + bright * centerBoost;
-        colScore[x] += local * 0.06;
-      }
-      rowScore[y] = rs;
-    }
-
-    const rowBlur = boxBlur(rowScore, 1, height, 7);
-    const rowMean = rowBlur.reduce((a, b) => a + b, 0) / height;
-    let rowSq = 0;
-    for (let i = 0; i < height; i++) rowSq += rowBlur[i] * rowBlur[i];
-    const rowStd = Math.sqrt(Math.max(0, rowSq / height - rowMean * rowMean));
-    const rowThr = rowMean + rowStd * 0.55;
-
-    const mask = new Uint8Array(width * height);
-    for (let y = 0; y < height; y++) {
-      if (rowBlur[y] < rowThr) continue;
-      for (let x = 0; x < width; x++) {
-        const idx = y * width + x;
-        const local = Math.abs(gray[idx] - blur[idx]);
-        if (local > 8 || gray[idx] > 140) mask[idx] = 1;
-      }
-    }
-
-    let result = close(open(mask, width, height, 1), width, height, 1);
-    const comps = extractComponents(result, width, height);
-    const keep = [];
-    for (const c of comps) {
-      const boxW = c.maxX - c.minX + 1;
-      const boxH = c.maxY - c.minY + 1;
-      const areaRatio = c.area / (width * height);
-      const aspect = boxW / Math.max(1, boxH);
-      if (areaRatio < 0.00005 || areaRatio > 0.08) continue;
-      if (boxH > height * 0.20) continue;
-      if (aspect < 0.25 && boxH > 20) continue;
-      keep.push(c);
-    }
-    result = fillComponentBoxes(keep, width, height, 7, 5);
-    result = close(result, width, height, 1);
-    return result;
-  }
-
-  function unionMasks(masks) {
-    const out = new Uint8Array(W * H);
-    for (const mask of masks) {
-      for (let i = 0; i < out.length; i++) {
-        if (mask[i]) out[i] = 1;
-      }
-    }
-    return out;
-  }
-
-  function refineFinalMask(mask, width, height) {
-    let m = close(open(mask, width, height, 1), width, height, 1);
-    const comps = extractComponents(m, width, height);
-
-    const keep = [];
-    for (const c of comps) {
-      const boxW = c.maxX - c.minX + 1;
-      const boxH = c.maxY - c.minY + 1;
-      const areaRatio = c.area / (width * height);
-      const aspect = boxW / Math.max(1, boxH);
-      if (areaRatio < 0.00005) continue;
-      if (areaRatio > 0.18) continue;
-      if (boxW < 4 || boxH < 3) continue;
-      if (aspect < 0.08 && boxH > 30) continue;
-      keep.push(c);
-    }
-
-    m = fillComponentBoxes(keep, width, height, 5, 4);
-    m = close(m, width, height, 1);
-    return m;
-  }
-
-  function buildEnsembleMask(imageData) {
-    const gray = makeGray(imageData);
-
-    const m1 = detectorAContrast(gray, W, H);
-    const m2 = detectorBEdges(gray, W, H);
-    const m3 = detectorCRows(gray, W, H);
-
-    const s1 = scoreMask(m1, W, H);
-    const s2 = scoreMask(m2, W, H);
-    const s3 = scoreMask(m3, W, H);
-
-    const scored = [
-      { name: 'contrast', mask: m1, score: s1 },
-      { name: 'edges', mask: m2, score: s2 },
-      { name: 'rows', mask: m3, score: s3 }
-    ].sort((a, b) => b.score - a.score);
-
-    const top = scored[0];
-    const second = scored[1];
-    const third = scored[2];
-
-    let chosen = top.mask;
-
-    if (second.score >= top.score * 0.88) {
-      chosen = unionMasks([top.mask, second.mask]);
-    }
-
-    if (third.score >= top.score * 0.94) {
-      chosen = unionMasks([chosen, third.mask]);
-    }
-
-    chosen = refineFinalMask(chosen, W, H);
-
-    return {
-      mask: chosen,
-      debug: scored.map(s => ({
-        name: s.name,
-        score: s.score.toFixed(2),
-        coverage: (sumMask(s.mask) / (W * H) * 100).toFixed(2) + '%'
-      }))
-    };
-  }
-
-  function buildPaddedCanvasFromCanvas(sourceCanvas, outWidth, outHeight, padX, padY, fillBlack = false) {
-    const outCanvas = document.createElement('canvas');
-    outCanvas.width = outWidth;
-    outCanvas.height = outHeight;
-    const ctx = outCanvas.getContext('2d', { willReadFrequently: true });
-
-    if (fillBlack) {
-      ctx.fillStyle = '#000';
-      ctx.fillRect(0, 0, outWidth, outHeight);
-    } else {
-      ctx.clearRect(0, 0, outWidth, outHeight);
-    }
-
-    const sw = sourceCanvas.width;
-    const sh = sourceCanvas.height;
-
-    ctx.drawImage(sourceCanvas, padX, padY);
-
-    if (padX > 0) {
-      ctx.drawImage(sourceCanvas, 0, 0, 1, sh, 0, padY, padX, sh);
-      ctx.drawImage(sourceCanvas, sw - 1, 0, 1, sh, padX + sw, padY, outWidth - (padX + sw), sh);
-    }
-
-    if (padY > 0) {
-      ctx.drawImage(sourceCanvas, 0, 0, sw, 1, 0, 0, outWidth, padY);
-      ctx.drawImage(sourceCanvas, 0, sh - 1, sw, 1, 0, padY + sh, outWidth, outHeight - (padY + sh));
-    }
-
-    return outCanvas;
-  }
-
-  async function compositeFinalImage(originalCanvas, inpaintedBlob) {
-    const inpaintedImg = await imageBlobToImage(inpaintedBlob);
-
-    const inferCanvas = document.createElement('canvas');
-    inferCanvas.width = INFER_W;
-    inferCanvas.height = INFER_H;
-    const inferCtx = inferCanvas.getContext('2d', { willReadFrequently: true });
-    inferCtx.drawImage(inpaintedImg, 0, 0, INFER_W, INFER_H);
-
-    const finalCanvas = document.createElement('canvas');
-    finalCanvas.width = W;
-    finalCanvas.height = H;
-    const finalCtx = finalCanvas.getContext('2d', { willReadFrequently: true });
-
-    finalCtx.drawImage(inferCanvas, PAD_X, PAD_Y, W, H, 0, 0, W, H);
-    return canvasToBlob(finalCanvas, 'image/png');
-  }
-
-  function renderDiagnostics(items) {
-    diagnosticsEl.innerHTML = '';
-    for (const item of items) {
-      const el = document.createElement('div');
-      el.className = 'badge';
-      el.textContent = `${item.name}: score ${item.score} | ${item.coverage}`;
-      diagnosticsEl.appendChild(el);
-    }
-    diagnosticsEl.classList.remove('hidden');
-  }
-
-  async function inpaintWithMask(imageBlob, maskBlob) {
-    const fd = new FormData();
-    fd.append('image', imageBlob, 'poster.png');
-    fd.append('mask', maskBlob, 'mask.png');
-
-    const res = await fetch('/api/inpaint', {
-      method: 'POST',
-      body: fd
-    });
-
-    if (!res.ok) {
-      throw new Error(await res.text());
-    }
-
-    return res.blob();
-  }
-
-  async function processPoster() {
-    if (isProcessing) return;
-    if (!currentFile) {
-      showError('Upload an image first.');
-      return;
-    }
-
+  uploadEl.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    currentFile = file;
     clearError();
     previewSectionEl.classList.add('hidden');
-    diagnosticsEl.classList.add('hidden');
-    setLoading(true, 'Running browser detectors...');
-
-    isProcessing = true;
 
     try {
-      const imageData = imgCtx.getImageData(0, 0, W, H);
-      const { mask, debug } = buildEnsembleMask(imageData);
+      const img = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const resImg = new Image();
+          resImg.onload = () => resolve(resImg);
+          resImg.onerror = () => reject(new Error('Failed to render loaded asset image.'));
+          resImg.src = ev.target.result;
+        };
+        reader.onerror = () => reject(new Error('File reading failed.'));
+        reader.readAsDataURL(file);
+      });
 
-      renderDiagnostics(debug);
-      drawMaskToCanvas(mask, W, H, maskPreviewCanvas);
+      drawImageCover(imgCtx, img, W, H);
+    } catch (err) {
+      showError(err.message);
+    }
+  });
 
-      const paddedImageCanvas = buildPaddedCanvasFromCanvas(imgCanvas, INFER_W, INFER_H, PAD_X, PAD_Y, false);
-      const paddedMaskCanvas = buildPaddedCanvasFromCanvas(maskPreviewCanvas, INFER_W, INFER_H, PAD_X, PAD_Y, true);
+  generateBtn.addEventListener('click', async () => {
+    if (!currentFile || isProcessing) return;
+    isProcessing = true;
+    clearError();
+    revokeResultUrl();
+    diagnosticsEl.innerHTML = '';
+    diagnosticsEl.classList.add('hidden');
 
-      const paddedImageBlob = await canvasToBlob(paddedImageCanvas, 'image/png');
-      const paddedMaskBlob = await canvasToBlob(paddedMaskCanvas, 'image/png');
+    try {
+      setLoading(true, 'Running structural analysis models...');
+      const sourceData = imgCtx.getImageData(0, 0, W, H);
+      const gray = makeGray(sourceData);
 
-      setLoading(true, 'Inpainting masked regions with Workers AI...');
+      const maskA = detectorAContrast(gray, W, H);
+      const maskB = detectorBSobel(gray, W, H);
 
-      const inpaintedBlob = await inpaintWithMask(paddedImageBlob, paddedMaskBlob);
-      const finalBlob = await compositeFinalImage(imgCanvas, inpaintedBlob);
+      const scoreA = scoreMask(maskA, W, H);
+      const scoreB = scoreMask(maskB, W, H);
 
-      revokeResultUrl();
+      diagnosticsEl.classList.remove('hidden');
+      
+      const itemA = document.createElement('span');
+      itemA.className = 'badge';
+      itemA.textContent = 'Engine A Score: ' + scoreA.toFixed(2);
+      diagnosticsEl.appendChild(itemA);
+
+      const itemB = document.createElement('span');
+      itemB.className = 'badge';
+      itemB.textContent = 'Engine B Score: ' + scoreB.toFixed(2);
+      diagnosticsEl.appendChild(itemB);
+
+      let chosenMask = scoreA >= scoreB ? maskA : maskB;
+      if (sumMask(chosenMask) === 0) {
+        chosenMask = maskA; 
+      }
+
+      drawMaskToCanvas(chosenMask, W, H, maskPreviewCanvas);
+
+      setLoading(true, 'Compressing canvases for inference layout...');
+      
+      const inferCanvas = document.createElement('canvas');
+      inferCanvas.width = INFER_W;
+      inferCanvas.height = INFER_H;
+      const inferCtx = inferCanvas.getContext('2d');
+      inferCtx.fillStyle = '#000000';
+      inferCtx.fillRect(0, 0, INFER_W, INFER_H);
+      inferCtx.drawImage(imgCanvas, PAD_X, PAD_Y, W, H);
+      const imageBlob = await canvasToBlob(inferCanvas, 'image/jpeg', 0.92);
+
+      const inferMaskCanvas = document.createElement('canvas');
+      inferMaskCanvas.width = INFER_W;
+      inferMaskCanvas.height = INFER_H;
+      const inferMaskCtx = inferMaskCanvas.getContext('2d');
+      inferMaskCtx.fillStyle = '#000000';
+      inferMaskCtx.fillRect(0, 0, INFER_W, INFER_H);
+      inferMaskCtx.drawImage(maskPreviewCanvas, PAD_X, PAD_Y, W, H);
+      const maskBlob = await canvasToBlob(inferMaskCanvas, 'image/png');
+
+      setLoading(true, 'Transmitting context frames to Workers AI Inpainter...');
+
+      const formData = new FormData();
+      formData.append('image', imageBlob, 'source.jpg');
+      formData.append('mask', maskBlob, 'mask.png');
+
+      const response = await fetch('/api/inpainting', {
+        method: 'POST',
+        body: formData
+      });
+
+      if (!response.ok) {
+        const textErr = await response.text();
+        throw new Error('Upstream Engine Failure (' + response.status + '): ' + textErr);
+      }
+
+      const responseBlob = await response.blob();
+      const outputImg = await imageBlobToImage(responseBlob);
+
+      const cleanCanvas = document.createElement('canvas');
+      cleanCanvas.width = W;
+      cleanCanvas.height = H;
+      const cleanCtx = cleanCanvas.getContext('2d');
+      cleanCtx.drawImage(outputImg, -PAD_X, -PAD_Y, INFER_W, INFER_H);
+
+      const finalBlob = await canvasToBlob(cleanCanvas, 'image/jpeg', 0.95);
       currentObjectUrl = URL.createObjectURL(finalBlob);
       resultImgEl.src = currentObjectUrl;
+
       previewSectionEl.classList.remove('hidden');
     } catch (err) {
-      showError('Error: ' + (err?.message || String(err)));
+      showError(err.message);
     } finally {
       isProcessing = false;
       setLoading(false);
     }
-  }
-
-  async function loadAndDrawFile(file) {
-    if (!file) return;
-    currentFile = file;
-    clearError();
-    revokeResultUrl();
-    previewSectionEl.classList.add('hidden');
-    diagnosticsEl.classList.add('hidden');
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const img = new Image();
-      img.onload = () => {
-        drawImageCover(imgCtx, img, W, H);
-      };
-      img.onerror = () => showError('Could not read the image file.');
-      img.src = event.target.result;
-    };
-    reader.onerror = () => showError('Could not read the file.');
-    reader.readAsDataURL(file);
-  }
-
-  uploadEl.addEventListener('change', async (e) => {
-    const file = e.target.files && e.target.files[0];
-    await loadAndDrawFile(file);
-  });
-
-  generateBtn.addEventListener('click', async () => {
-    await processPoster();
   });
 
   resetBtn.addEventListener('click', () => {
+    uploadEl.value = '';
     currentFile = null;
     clearError();
     revokeResultUrl();
+    diagnosticsEl.innerHTML = '';
     diagnosticsEl.classList.add('hidden');
     previewSectionEl.classList.add('hidden');
     imgCtx.clearRect(0, 0, W, H);
-    maskPreviewCanvas.getContext('2d').clearRect(0, 0, W, H);
-    uploadEl.value = '';
-    imgCtx.fillStyle = '#e5e7eb';
-    imgCtx.fillRect(0, 0, W, H);
-    imgCtx.fillStyle = '#94a3b8';
-    imgCtx.font = 'bold 22px system-ui, sans-serif';
-    imgCtx.textAlign = 'center';
-    imgCtx.fillText('Upload a poster to begin', W / 2, H / 2);
   });
-
-  imgCtx.fillStyle = '#e5e7eb';
-  imgCtx.fillRect(0, 0, W, H);
-  imgCtx.fillStyle = '#94a3b8';
-  imgCtx.font = 'bold 22px system-ui, sans-serif';
-  imgCtx.textAlign = 'center';
-  imgCtx.fillText('Upload a poster to begin', W / 2, H / 2);
 })();
 </script>
 </body>
 </html>`;
-
-function clamp(v, min, max) {
-  return Math.max(min, Math.min(max, v));
-}
-
-function parseFormFile(formData, key) {
-  const file = formData.get(key);
-  if (!(file instanceof File)) return null;
-  return file;
-}
-
-function buildPrompt() {
-  return [
-    'Remove only the masked text regions and reconstruct the original poster artwork underneath.',
-    'Preserve the exact subject, pose, clothing, lighting, color palette, composition, and background structure.',
-    'Do not redesign the image or invent a new scene.'
-  ].join(' ');
-}
-
-function buildNegativePrompt() {
-  return [
-    'text',
-    'letters',
-    'words',
-    'typography',
-    'logo',
-    'watermark',
-    'signature',
-    'subtitle',
-    'credits',
-    'poster redesign',
-    'face change',
-    'pose change',
-    'new person',
-    'extra object',
-    'curtain',
-    'drape',
-    'fabric',
-    'wallpaper'
-  ].join(', ');
-}
-
-function buildResponseHeaders(contentType) {
-  return {
-    'Content-Type': contentType,
-    'Cache-Control': 'no-store'
-  };
-}
-
-export default {
-  async fetch(request, env) {
-    const url = new URL(request.url);
-
-    if (request.method === 'GET' && url.pathname === '/') {
-      return new Response(HTML_CONTENT, {
-        headers: buildResponseHeaders('text/html; charset=utf-8')
-      });
-    }
-
-    if (request.method === 'POST' && url.pathname === '/api/inpaint') {
-      try {
-        const formData = await request.formData();
-        const imageFile = parseFormFile(formData, 'image');
-        const maskFile = parseFormFile(formData, 'mask');
-
-        if (!imageFile || !maskFile) {
-          return new Response('Missing image or mask payload', { status: 400 });
-        }
-
-        const imageBuffer = await imageFile.arrayBuffer();
-        const maskBuffer = await maskFile.arrayBuffer();
-
-        const inputs = {
-          prompt: buildPrompt(),
-          negative_prompt: buildNegativePrompt(),
-          image: Array.from(new Uint8Array(imageBuffer)),
-          mask: Array.from(new Uint8Array(maskBuffer)),
-          width: 504,
-          height: 752,
-          num_steps: 16,
-          strength: 0.55,
-          guidance: 4.0
-        };
-
-        const response = await env.AI.run('@cf/runwayml/stable-diffusion-v1-5-inpainting', inputs);
-
-        return new Response(response, {
-          headers: buildResponseHeaders('image/png')
-        });
-      } catch (error) {
-        return new Response(error?.message || 'Server exception occurred', { status: 500 });
-      }
-    }
-
-    return new Response('Resource Not Found', { status: 404 });
-  }
-};
