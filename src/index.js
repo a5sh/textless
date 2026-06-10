@@ -1,219 +1,717 @@
-const HTML_CONTENT = `<!DOCTYPE html>
+const HTML_CONTENT = String.raw`<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Textless Poster Generator</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <style>
-  .canvas-container {
+  :root {
+    color-scheme: light;
+  }
+
+  body {
+    background:
+      radial-gradient(circle at top, rgba(99, 102, 241, 0.08), transparent 28%),
+      linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
+  }
+
+  .canvas-shell {
     position: relative;
     width: 500px;
     height: 750px;
-    background: #e5e7eb;
     margin: 0 auto;
     overflow: hidden;
-    border-radius: 0.5rem;
+    border-radius: 18px;
+    background: linear-gradient(180deg, #e5e7eb, #f3f4f6);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.65),
+      0 18px 50px rgba(15, 23, 42, 0.14);
   }
-  canvas {
-    position: absolute;
-    top: 0;
-    left: 0;
+
+  canvas, img.preview-image {
+    display: block;
     width: 100%;
     height: 100%;
-  }
-  .preview-container {
-    display: flex;
-    gap: 1rem;
-    margin-top: 1rem;
-    padding-top: 1rem;
-    border-top: 1px solid #e5e7eb;
-  }
-  .preview-item {
-    flex: 1;
-    text-align: center;
-  }
-  .preview-item p {
-    font-size: 0.875rem;
-    color: #6b7280;
-    margin-bottom: 0.5rem;
-  }
-  .preview-image {
-    width: 100%;
-    max-width: 200px;
-    height: 300px;
-    border: 1px solid #d1d5db;
-    border-radius: 0.375rem;
     object-fit: contain;
-    background: #f3f4f6;
+    background: #f8fafc;
+    border-radius: 12px;
+    border: 1px solid #e5e7eb;
+  }
+
+  .mini-preview {
+    width: 100%;
+    max-width: 220px;
+    height: 330px;
+  }
+
+  .status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 9999px;
+    background: #4f46e5;
+    box-shadow: 0 0 0 0 rgba(79, 70, 229, 0.45);
+    animation: pulse 1.4s infinite;
+  }
+
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(79, 70, 229, 0.45); }
+    70% { box-shadow: 0 0 0 12px rgba(79, 70, 229, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(79, 70, 229, 0); }
   }
 </style>
 </head>
-<body class="bg-slate-50 min-h-screen text-slate-900 p-8 font-sans">
-  <div class="max-w-3xl mx-auto bg-white p-8 rounded-xl shadow-lg border border-slate-200">
-    <h1 class="text-3xl font-extrabold mb-2 text-center text-slate-800">Textless Poster Generator</h1>
-    <p class="mb-8 text-center text-slate-500">Upload a text-filled movie poster. AI automatically detects and removes all text seamlessly.</p>
+<body class="min-h-screen text-slate-900 p-6 md:p-8 font-sans">
+  <div class="max-w-4xl mx-auto bg-white/90 backdrop-blur border border-slate-200 rounded-3xl shadow-xl p-6 md:p-8">
+    <div class="text-center mb-7">
+      <h1 class="text-3xl md:text-4xl font-black tracking-tight text-slate-900">Textless Poster Generator</h1>
+      <p class="mt-2 text-slate-600">
+        Upload a text-heavy movie poster. The worker removes text using conservative auto-detection and Cloudflare Workers AI inpainting.
+      </p>
+    </div>
 
     <div class="flex flex-col items-center">
-      <input type="file" id="upload" accept="image/*" class="mb-6 block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition" />
-      
-      <div class="canvas-container shadow-inner">
-        <canvas id="imgCanvas" width="512" height="768"></canvas>
+      <input
+        type="file"
+        id="upload"
+        accept="image/*"
+        class="mb-5 block w-full text-sm text-slate-600 file:mr-4 file:py-2.5 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition"
+      />
+
+      <div class="canvas-shell">
+        <canvas id="imgCanvas" width="500" height="750"></canvas>
       </div>
 
-      <button id="generateBtn" class="w-full px-6 py-3 bg-indigo-600 text-white rounded-md font-bold hover:bg-indigo-700 disabled:bg-indigo-300 mt-6 mb-4 transition">Generate Textless Poster</button>
-      
-      <div id="loading" class="hidden mb-4 text-indigo-600 font-semibold animate-pulse flex items-center gap-2">
-        <div class="w-4 h-4 bg-indigo-600 rounded-full animate-bounce"></div>
-        Detecting text and removing... (~20s)
-      </div>
-      <div id="errorMsg" class="hidden mb-4 text-red-600 font-semibold text-sm text-center max-w-md"></div>
+      <div class="w-full mt-5 grid gap-3 md:grid-cols-2">
+        <button
+          id="generateBtn"
+          class="w-full px-6 py-3.5 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 disabled:bg-indigo-300 transition shadow-md shadow-indigo-200"
+        >
+          Generate Textless Poster
+        </button>
 
-      <div id="previewSection" class="hidden preview-container w-full">
-        <div class="preview-item">
-          <p><strong>Detected Text Regions</strong></p>
-          <canvas id="maskPreviewCanvas" class="preview-image"></canvas>
-        </div>
-        <div class="preview-item">
-          <p><strong>Result</strong></p>
-          <img id="resultImg" class="preview-image" />
+        <button
+          id="resetBtn"
+          class="w-full px-6 py-3.5 bg-slate-100 text-slate-800 rounded-xl font-bold hover:bg-slate-200 transition border border-slate-200"
+        >
+          Reset
+        </button>
+      </div>
+
+      <div id="loading" class="hidden mt-5 text-indigo-700 font-semibold flex items-center gap-3">
+        <div class="status-dot"></div>
+        <span id="loadingText">Detecting text regions...</span>
+      </div>
+
+      <div id="errorMsg" class="hidden mt-4 text-red-600 font-semibold text-sm text-center max-w-2xl"></div>
+
+      <div id="previewSection" class="hidden w-full mt-8">
+        <div class="grid gap-4 md:grid-cols-2">
+          <div class="text-center">
+            <p class="mb-2 text-sm font-semibold text-slate-600">Detected Text Mask</p>
+            <canvas id="maskPreviewCanvas" width="500" height="750" class="mini-preview mx-auto"></canvas>
+          </div>
+
+          <div class="text-center">
+            <p class="mb-2 text-sm font-semibold text-slate-600">Final Result</p>
+            <img id="resultImg" class="preview-image mini-preview mx-auto" alt="Generated textless poster" />
+          </div>
         </div>
       </div>
     </div>
   </div>
 
-  <script>
-    const imgCanvas = document.getElementById('imgCanvas');
-    const imgCtx = imgCanvas.getContext('2d', { willReadFrequently: true });
-    const SD_WIDTH = 512;
-    const SD_HEIGHT = 768;
+<script>
+(() => {
+  const OUTPUT_WIDTH = 500;
+  const OUTPUT_HEIGHT = 750;
 
-    document.getElementById('upload').addEventListener('change', (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const img = new Image();
-        img.onload = () => {
-          imgCtx.clearRect(0, 0, SD_WIDTH, SD_HEIGHT);
-          const scale = Math.max(SD_WIDTH / img.width, SD_HEIGHT / img.height);
-          const x = (SD_WIDTH / 2) - (img.width / 2) * scale;
-          const y = (SD_HEIGHT / 2) - (img.height / 2) * scale;
-          imgCtx.drawImage(img, x, y, img.width * scale, img.height * scale);
-        };
-        img.src = event.target.result;
+  const uploadEl = document.getElementById('upload');
+  const generateBtn = document.getElementById('generateBtn');
+  const resetBtn = document.getElementById('resetBtn');
+  const loadingEl = document.getElementById('loading');
+  const loadingTextEl = document.getElementById('loadingText');
+  const errorMsgEl = document.getElementById('errorMsg');
+  const previewSectionEl = document.getElementById('previewSection');
+  const resultImgEl = document.getElementById('resultImg');
+
+  const imgCanvas = document.getElementById('imgCanvas');
+  const imgCtx = imgCanvas.getContext('2d', { willReadFrequently: true });
+
+  const maskPreviewCanvas = document.getElementById('maskPreviewCanvas');
+  const maskPreviewCtx = maskPreviewCanvas.getContext('2d', { willReadFrequently: true });
+
+  let currentFile = null;
+  let isProcessing = false;
+  let currentObjectUrl = null;
+
+  function showError(message) {
+    errorMsgEl.textContent = message;
+    errorMsgEl.classList.remove('hidden');
+  }
+
+  function clearError() {
+    errorMsgEl.textContent = '';
+    errorMsgEl.classList.add('hidden');
+  }
+
+  function setLoading(state, text = 'Detecting text regions...') {
+    loadingTextEl.textContent = text;
+    loadingEl.classList.toggle('hidden', !state);
+    generateBtn.disabled = state;
+    uploadEl.disabled = state;
+    resetBtn.disabled = state;
+  }
+
+  function revokeResultUrl() {
+    if (currentObjectUrl) {
+      URL.revokeObjectURL(currentObjectUrl);
+      currentObjectUrl = null;
+    }
+  }
+
+  function drawImageCover(ctx, img, width, height) {
+    ctx.clearRect(0, 0, width, height);
+    const scale = Math.max(width / img.width, height / img.height);
+    const drawW = img.width * scale;
+    const drawH = img.height * scale;
+    const x = (width - drawW) / 2;
+    const y = (height - drawH) / 2;
+    ctx.drawImage(img, x, y, drawW, drawH);
+  }
+
+  function imageBlobToImage(blob) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        resolve(img);
       };
-      reader.readAsDataURL(file);
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error('Failed to decode image.'));
+      };
+      img.src = url;
     });
+  }
 
-    // Sobel edge detection to find text regions
-    function detectTextRegions(imageData) {
-      const width = imageData.width;
-      const height = imageData.height;
-      const data = imageData.data;
-      
-      // Convert to grayscale
-      const gray = new Uint8Array(width * height);
-      for (let i = 0; i < data.length; i += 4) {
-        gray[i >> 2] = 0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2];
-      }
-
-      // Sobel edge detection
-      const edges = new Uint8Array(width * height);
-      for (let y = 1; y < height - 1; y++) {
-        for (let x = 1; x < width - 1; x++) {
-          const idx = y * width + x;
-          const gx = (-1 * gray[(y-1)*width + (x-1)]) + (-2 * gray[y*width + (x-1)]) + (-1 * gray[(y+1)*width + (x-1)])
-                   + (1 * gray[(y-1)*width + (x+1)]) + (2 * gray[y*width + (x+1)]) + (1 * gray[(y+1)*width + (x+1)]);
-          const gy = (-1 * gray[(y-1)*width + (x-1)]) + (-2 * gray[(y-1)*width + x]) + (-1 * gray[(y-1)*width + (x+1)])
-                   + (1 * gray[(y+1)*width + (x-1)]) + (2 * gray[(y+1)*width + x]) + (1 * gray[(y+1)*width + (x+1)]);
-          edges[idx] = Math.min(255, Math.sqrt(gx * gx + gy * gy));
+  function canvasToBlob(canvas, type = 'image/png', quality) {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          reject(new Error('Unable to export canvas.'));
+          return;
         }
-      }
+        resolve(blob);
+      }, type, quality);
+    });
+  }
 
-      // Dilate edges to create thicker mask regions
-      const dilated = new Uint8Array(width * height);
-      const threshold = 40;
-      const dilateRadius = 8;
-      
-      for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-          const idx = y * width + x;
-          let maxEdge = edges[idx];
-          
-          for (let dy = -dilateRadius; dy <= dilateRadius; dy++) {
-            for (let dx = -dilateRadius; dx <= dilateRadius; dx++) {
-              const ny = y + dy;
-              const nx = x + dx;
-              if (ny >= 0 && ny < height && nx >= 0 && nx < width) {
-                maxEdge = Math.max(maxEdge, edges[ny * width + nx]);
+  function getLuma(r, g, b) {
+    return 0.299 * r + 0.587 * g + 0.114 * b;
+  }
+
+  function computeEdges(imageData) {
+    const { width, height, data } = imageData;
+    const total = width * height;
+    const gray = new Float32Array(total);
+    for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+      gray[p] = getLuma(data[i], data[i + 1], data[i + 2]);
+    }
+
+    const edges = new Float32Array(total);
+    let sum = 0;
+    let sumSq = 0;
+    let count = 0;
+
+    for (let y = 1; y < height - 1; y++) {
+      const row = y * width;
+      for (let x = 1; x < width - 1; x++) {
+        const idx = row + x;
+
+        const a = gray[idx - width - 1];
+        const b = gray[idx - width];
+        const c = gray[idx - width + 1];
+        const d = gray[idx - 1];
+        const f = gray[idx + 1];
+        const g = gray[idx + width - 1];
+        const h = gray[idx + width];
+        const i = gray[idx + width + 1];
+
+        const gx = (-a) + (-2 * d) + (-g) + c + (2 * f) + i;
+        const gy = (-a) + (-2 * b) + (-c) + g + (2 * h) + i;
+        const mag = Math.hypot(gx, gy);
+
+        edges[idx] = mag;
+        sum += mag;
+        sumSq += mag * mag;
+        count++;
+      }
+    }
+
+    const mean = sum / Math.max(1, count);
+    const variance = Math.max(0, sumSq / Math.max(1, count) - mean * mean);
+    const std = Math.sqrt(variance);
+
+    return { gray, edges, mean, std };
+  }
+
+  function dilateBinaryMap(map, width, height, passes = 1) {
+    let current = map;
+
+    for (let pass = 0; pass < passes; pass++) {
+      const next = new Uint8Array(width * height);
+
+      for (let y = 1; y < height - 1; y++) {
+        const row = y * width;
+        for (let x = 1; x < width - 1; x++) {
+          const idx = row + x;
+          let on = 0;
+
+          for (let dy = -1; dy <= 1 && !on; dy++) {
+            const ny = y + dy;
+            const nRow = ny * width;
+            for (let dx = -1; dx <= 1; dx++) {
+              if (current[nRow + x + dx]) {
+                on = 1;
+                break;
               }
             }
           }
-          dilated[idx] = maxEdge > threshold ? 255 : 0;
+
+          next[idx] = on;
         }
       }
 
-      return dilated;
+      current = next;
     }
 
-    document.getElementById('generateBtn').addEventListener('click', async () => {
-      const btn = document.getElementById('generateBtn');
-      const loading = document.getElementById('loading');
-      const errorMsg = document.getElementById('errorMsg');
-      const previewSection = document.getElementById('previewSection');
+    return current;
+  }
 
-      btn.disabled = true;
-      loading.classList.remove('hidden');
-      errorMsg.classList.add('hidden');
-      previewSection.classList.add('hidden');
+  function erodeBinaryMap(map, width, height, passes = 1) {
+    let current = map;
 
-      try {
-        const imageBlob = await new Promise(resolve => imgCanvas.toBlob(resolve, 'image/png'));
-        
-        // Detect text regions
-        const imageData = imgCtx.getImageData(0, 0, SD_WIDTH, SD_HEIGHT);
-        const maskData = detectTextRegions(imageData);
+    for (let pass = 0; pass < passes; pass++) {
+      const next = new Uint8Array(width * height);
 
-        // Create white mask (inverted: white = remove, black = keep)
-        const maskCanvas = document.createElement('canvas');
-        maskCanvas.width = SD_WIDTH;
-        maskCanvas.height = SD_HEIGHT;
-        const maskCtx = maskCanvas.getContext('2d');
-        const maskImageData = maskCtx.createImageData(SD_WIDTH, SD_HEIGHT);
-        
-        for (let i = 0; i < maskData.length; i++) {
-          maskImageData.data[i * 4] = maskData[i];       // R
-          maskImageData.data[i * 4 + 1] = maskData[i];   // G
-          maskImageData.data[i * 4 + 2] = maskData[i];   // B
-          maskImageData.data[i * 4 + 3] = 255;           // A
+      for (let y = 1; y < height - 1; y++) {
+        const row = y * width;
+        for (let x = 1; x < width - 1; x++) {
+          const idx = row + x;
+          let keep = 1;
+
+          for (let dy = -1; dy <= 1 && keep; dy++) {
+            const ny = y + dy;
+            const nRow = ny * width;
+            for (let dx = -1; dx <= 1; dx++) {
+              if (!current[nRow + x + dx]) {
+                keep = 0;
+                break;
+              }
+            }
+          }
+
+          next[idx] = keep;
         }
-        maskCtx.putImageData(maskImageData, 0, 0);
-
-        // Show mask preview
-        document.getElementById('maskPreviewCanvas').getContext('2d').drawImage(maskCanvas, 0, 0);
-
-        const maskBlob = await new Promise(resolve => maskCanvas.toBlob(resolve, 'image/png'));
-
-        const formData = new FormData();
-        formData.append('image', imageBlob);
-        formData.append('mask', maskBlob);
-
-        const res = await fetch('/api/inpaint', { method: 'POST', body: formData });
-        if (!res.ok) throw new Error(await res.text());
-
-        const resultBlob = await res.blob();
-        document.getElementById('resultImg').src = URL.createObjectURL(resultBlob);
-        previewSection.classList.remove('hidden');
-      } catch(e) {
-        errorMsg.textContent = 'Error: ' + e.message;
-        errorMsg.classList.remove('hidden');
-      } finally {
-        btn.disabled = false;
-        loading.classList.add('hidden');
       }
-    });
-  </script>
+
+      current = next;
+    }
+
+    return current;
+  }
+
+  function extractComponents(binary, edgeMap, width, height) {
+    const visited = new Uint8Array(width * height);
+    const components = [];
+    const stack = [];
+
+    for (let y = 0; y < height; y++) {
+      const row = y * width;
+      for (let x = 0; x < width; x++) {
+        const start = row + x;
+        if (!binary[start] || visited[start]) continue;
+
+        visited[start] = 1;
+        stack.length = 0;
+        stack.push(start);
+
+        let area = 0;
+        let minX = x;
+        let minY = y;
+        let maxX = x;
+        let maxY = y;
+        let edgeSum = 0;
+
+        while (stack.length) {
+          const idx = stack.pop();
+          const px = idx % width;
+          const py = (idx / width) | 0;
+
+          area++;
+          edgeSum += edgeMap[idx];
+          if (px < minX) minX = px;
+          if (py < minY) minY = py;
+          if (px > maxX) maxX = px;
+          if (py > maxY) maxY = py;
+
+          for (let dy = -1; dy <= 1; dy++) {
+            const ny = py + dy;
+            if (ny < 0 || ny >= height) continue;
+            const nRow = ny * width;
+            for (let dx = -1; dx <= 1; dx++) {
+              const nx = px + dx;
+              if (nx < 0 || nx >= width) continue;
+              const nIdx = nRow + nx;
+              if (!binary[nIdx] || visited[nIdx]) continue;
+              visited[nIdx] = 1;
+              stack.push(nIdx);
+            }
+          }
+        }
+
+        components.push({
+          area,
+          minX,
+          minY,
+          maxX,
+          maxY,
+          edgeSum
+        });
+      }
+    }
+
+    return components;
+  }
+
+  function componentLooksLikeText(component, width, height, edgeMean, edgeStd, settings) {
+    const boxW = component.maxX - component.minX + 1;
+    const boxH = component.maxY - component.minY + 1;
+    const boxArea = Math.max(1, boxW * boxH);
+    const fill = component.area / boxArea;
+    const aspect = boxW / Math.max(1, boxH);
+    const edgeDensity = component.edgeSum / Math.max(1, component.area);
+    const edgeRel = edgeDensity / Math.max(1e-6, edgeMean + edgeStd * 0.5);
+
+    let score = 0;
+
+    if (component.area >= settings.minArea && component.area <= width * height * settings.maxAreaRatio) score++;
+    if (fill >= settings.minFill && fill <= settings.maxFill) score++;
+    if (edgeRel >= settings.minEdgeRel) score++;
+    if (boxW >= 10 && boxH >= 4) score++;
+    if (aspect >= 1.15 || aspect <= 0.88) score++;
+    if (boxW >= 18 || boxH >= 18) score++;
+
+    return score >= settings.minScore;
+  }
+
+  function boxesClose(a, b, xGap, yGap) {
+    const horizontalGap = Math.max(0, Math.max(a.minX, b.minX) - Math.min(a.maxX, b.maxX) - 1);
+    const verticalGap = Math.max(0, Math.max(a.minY, b.minY) - Math.min(a.maxY, b.maxY) - 1);
+    return horizontalGap <= xGap && verticalGap <= yGap;
+  }
+
+  function mergeBoxes(boxes, xGap, yGap) {
+    let current = boxes.map(box => ({ ...box }));
+    let changed = true;
+
+    while (changed) {
+      changed = false;
+      current.sort((a, b) => a.minY - b.minY || a.minX - b.minX);
+
+      const next = [];
+      for (const box of current) {
+        let merged = false;
+
+        for (const target of next) {
+          if (boxesClose(target, box, xGap, yGap)) {
+            target.minX = Math.min(target.minX, box.minX);
+            target.minY = Math.min(target.minY, box.minY);
+            target.maxX = Math.max(target.maxX, box.maxX);
+            target.maxY = Math.max(target.maxY, box.maxY);
+            merged = true;
+            changed = true;
+            break;
+          }
+        }
+
+        if (!merged) next.push({ ...box });
+      }
+
+      current = next;
+    }
+
+    return current;
+  }
+
+  function fillBoxesToMask(boxes, width, height, padX, padY) {
+    const mask = new Uint8Array(width * height);
+
+    for (const box of boxes) {
+      const minX = Math.max(0, box.minX - padX);
+      const minY = Math.max(0, box.minY - padY);
+      const maxX = Math.min(width - 1, box.maxX + padX);
+      const maxY = Math.min(height - 1, box.maxY + padY);
+
+      for (let y = minY; y <= maxY; y++) {
+        const row = y * width;
+        for (let x = minX; x <= maxX; x++) {
+          mask[row + x] = 255;
+        }
+      }
+    }
+
+    return mask;
+  }
+
+  function countMaskPixels(mask) {
+    let count = 0;
+    for (let i = 0; i < mask.length; i++) {
+      if (mask[i]) count++;
+    }
+    return count;
+  }
+
+  function buildTextMask(imageData) {
+    const { width, height } = imageData;
+    const { edges, mean, std } = computeEdges(imageData);
+    const totalPixels = width * height;
+
+    const tries = [
+      {
+        edgeStdFactor: 0.95,
+        minArea: 12,
+        maxAreaRatio: 0.035,
+        minFill: 0.03,
+        maxFill: 0.58,
+        minEdgeRel: 0.82,
+        minScore: 4,
+        dilatePasses: 1,
+        padX: 4,
+        padY: 3,
+        mergeXGap: 16,
+        mergeYGap: 10
+      },
+      {
+        edgeStdFactor: 0.65,
+        minArea: 10,
+        maxAreaRatio: 0.05,
+        minFill: 0.02,
+        maxFill: 0.68,
+        minEdgeRel: 0.72,
+        minScore: 4,
+        dilatePasses: 2,
+        padX: 6,
+        padY: 4,
+        mergeXGap: 18,
+        mergeYGap: 12
+      }
+    ];
+
+    let bestMask = new Uint8Array(totalPixels);
+
+    for (const settings of tries) {
+      const threshold = mean + std * settings.edgeStdFactor;
+      const candidate = new Uint8Array(totalPixels);
+
+      for (let i = 0; i < totalPixels; i++) {
+        candidate[i] = edges[i] >= threshold ? 1 : 0;
+      }
+
+      let working = dilateBinaryMap(candidate, width, height, settings.dilatePasses);
+      working = erodeBinaryMap(working, width, height, 1);
+
+      const components = extractComponents(working, edges, width, height);
+
+      const textBoxes = [];
+      for (const comp of components) {
+        if (componentLooksLikeText(comp, width, height, mean, std, settings)) {
+          textBoxes.push(comp);
+        }
+      }
+
+      const merged = mergeBoxes(textBoxes, settings.mergeXGap, settings.mergeYGap);
+      const mask = fillBoxesToMask(merged, width, height, settings.padX, settings.padY);
+
+      const maskPixels = countMaskPixels(mask);
+      bestMask = mask;
+
+      if (maskPixels > totalPixels * 0.004) {
+        break;
+      }
+    }
+
+    // Slightly thicken the final mask so antialiased glyph edges are also removed.
+    return dilateBinaryMap(bestMask, width, height, 1);
+  }
+
+  function maskToCanvas(mask, width, height, canvas) {
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const imageData = ctx.createImageData(width, height);
+
+    for (let i = 0; i < mask.length; i++) {
+      const v = mask[i];
+      const p = i * 4;
+      imageData.data[p] = v;
+      imageData.data[p + 1] = v;
+      imageData.data[p + 2] = v;
+      imageData.data[p + 3] = 255;
+    }
+
+    ctx.putImageData(imageData, 0, 0);
+  }
+
+  async function compositeFinalImage(originalCanvas, inpaintedBlob, maskCanvas) {
+    const originalCtx = originalCanvas.getContext('2d', { willReadFrequently: true });
+    const originalData = originalCtx.getImageData(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
+
+    const inpaintedImg = await imageBlobToImage(inpaintedBlob);
+    const inpaintCanvas = document.createElement('canvas');
+    inpaintCanvas.width = OUTPUT_WIDTH;
+    inpaintCanvas.height = OUTPUT_HEIGHT;
+    const inpaintCtx = inpaintCanvas.getContext('2d', { willReadFrequently: true });
+    inpaintCtx.drawImage(inpaintedImg, 0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
+    const inpaintedData = inpaintCtx.getImageData(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
+
+    const featherCanvas = document.createElement('canvas');
+    featherCanvas.width = OUTPUT_WIDTH;
+    featherCanvas.height = OUTPUT_HEIGHT;
+    const featherCtx = featherCanvas.getContext('2d', { willReadFrequently: true });
+    featherCtx.clearRect(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
+    featherCtx.filter = 'blur(2px)';
+    featherCtx.drawImage(maskCanvas, 0, 0);
+    featherCtx.filter = 'none';
+    const featherData = featherCtx.getImageData(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT).data;
+
+    const outCanvas = document.createElement('canvas');
+    outCanvas.width = OUTPUT_WIDTH;
+    outCanvas.height = OUTPUT_HEIGHT;
+    const outCtx = outCanvas.getContext('2d', { willReadFrequently: true });
+    const outData = outCtx.createImageData(OUTPUT_WIDTH, OUTPUT_HEIGHT);
+
+    for (let i = 0, p = 0; i < outData.data.length; i += 4, p++) {
+      const alpha = featherData[i] / 255;
+
+      const r = Math.round(originalData.data[i] * (1 - alpha) + inpaintedData.data[i] * alpha);
+      const g = Math.round(originalData.data[i + 1] * (1 - alpha) + inpaintedData.data[i + 1] * alpha);
+      const b = Math.round(originalData.data[i + 2] * (1 - alpha) + inpaintedData.data[i + 2] * alpha);
+
+      outData.data[i] = r;
+      outData.data[i + 1] = g;
+      outData.data[i + 2] = b;
+      outData.data[i + 3] = 255;
+    }
+
+    outCtx.putImageData(outData, 0, 0);
+    return canvasToBlob(outCanvas, 'image/png');
+  }
+
+  async function processPoster() {
+    if (isProcessing) return;
+    if (!currentFile) {
+      showError('Upload an image first.');
+      return;
+    }
+
+    clearError();
+    previewSectionEl.classList.add('hidden');
+    setLoading(true, 'Detecting text regions...');
+
+    isProcessing = true;
+
+    try {
+      const originalBlob = await canvasToBlob(imgCanvas, 'image/png');
+      const imageData = imgCtx.getImageData(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
+      const mask = buildTextMask(imageData);
+
+      maskToCanvas(mask, OUTPUT_WIDTH, OUTPUT_HEIGHT, maskPreviewCanvas);
+      const maskBlob = await canvasToBlob(maskPreviewCanvas, 'image/png');
+
+      const formData = new FormData();
+      formData.append('image', originalBlob, 'poster.png');
+      formData.append('mask', maskBlob, 'mask.png');
+
+      setLoading(true, 'Inpainting masked text with Workers AI...');
+
+      const res = await fetch('/api/inpaint', {
+        method: 'POST',
+        body: formData
+      });
+
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
+
+      const inpaintedBlob = await res.blob();
+      const finalBlob = await compositeFinalImage(imgCanvas, inpaintedBlob, maskPreviewCanvas);
+
+      revokeResultUrl();
+      currentObjectUrl = URL.createObjectURL(finalBlob);
+      resultImgEl.src = currentObjectUrl;
+      previewSectionEl.classList.remove('hidden');
+    } catch (err) {
+      showError('Error: ' + (err?.message || String(err)));
+    } finally {
+      isProcessing = false;
+      setLoading(false);
+    }
+  }
+
+  async function loadAndDrawFile(file) {
+    if (!file) return;
+    currentFile = file;
+    clearError();
+    revokeResultUrl();
+    previewSectionEl.classList.add('hidden');
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const img = new Image();
+        img.onload = async () => {
+          drawImageCover(imgCtx, img, OUTPUT_WIDTH, OUTPUT_HEIGHT);
+          await processPoster();
+        };
+        img.onerror = () => showError('Could not read the image file.');
+        img.src = event.target.result;
+      } catch (err) {
+        showError('Could not load image: ' + (err?.message || String(err)));
+      }
+    };
+    reader.onerror = () => showError('Could not read the file.');
+    reader.readAsDataURL(file);
+  }
+
+  uploadEl.addEventListener('change', async (e) => {
+    const file = e.target.files && e.target.files[0];
+    await loadAndDrawFile(file);
+  });
+
+  generateBtn.addEventListener('click', async () => {
+    await processPoster();
+  });
+
+  resetBtn.addEventListener('click', () => {
+    currentFile = null;
+    clearError();
+    revokeResultUrl();
+    previewSectionEl.classList.add('hidden');
+    imgCtx.clearRect(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
+    maskPreviewCtx.clearRect(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
+    uploadEl.value = '';
+  });
+
+  // Optional starter state
+  imgCtx.fillStyle = '#e5e7eb';
+  imgCtx.fillRect(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
+  imgCtx.fillStyle = '#94a3b8';
+  imgCtx.font = 'bold 22px system-ui, sans-serif';
+  imgCtx.textAlign = 'center';
+  imgCtx.fillText('Upload a poster to begin', OUTPUT_WIDTH / 2, OUTPUT_HEIGHT / 2);
+})();
+</script>
 </body>
 </html>`;
 
@@ -221,47 +719,47 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // 1. Serve UI
     if (request.method === 'GET' && url.pathname === '/') {
       return new Response(HTML_CONTENT, {
         headers: { 'Content-Type': 'text/html; charset=utf-8' }
       });
     }
 
-    // 2. Handle AI Inference
     if (request.method === 'POST' && url.pathname === '/api/inpaint') {
       try {
         const formData = await request.formData();
         const imageFile = formData.get('image');
         const maskFile = formData.get('mask');
 
-        if (!imageFile || !maskFile) {
-          return new Response('Missing payload data', { status: 400 });
+        if (!(imageFile instanceof File) || !(maskFile instanceof File)) {
+          return new Response('Missing image or mask payload', { status: 400 });
         }
 
         const imageBuffer = await imageFile.arrayBuffer();
         const maskBuffer = await maskFile.arrayBuffer();
 
         const inputs = {
-          prompt: "cinematic background scenery, seamless texture, clear, empty space, highly detailed, visually coherent",
-          negative_prompt: "text, letters, words, font, typography, watermark, signature",
+          prompt: 'Remove all text from the masked regions and reconstruct the original poster artwork underneath. Preserve the exact subject, faces, pose, clothing, composition, lighting, and background structure. Do not redesign the poster or introduce a new scene.',
+          negative_prompt: 'text, letters, words, typography, logo, watermark, signature, subtitle, credits, poster redesign, face change, pose change, new person, extra object, curtain, drape, fabric, wallpaper',
           image: Array.from(new Uint8Array(imageBuffer)),
           mask: Array.from(new Uint8Array(maskBuffer)),
-          width: 512,
-          height: 768,
-          guidance: 7.5,
+          width: 500,
+          height: 750,
           num_steps: 20,
-          strength: 1
+          strength: 0.65,
+          guidance: 4.25
         };
 
-        const response = await env.AI.run("@cf/runwayml/stable-diffusion-v1-5-inpainting", inputs);
+        const response = await env.AI.run('@cf/runwayml/stable-diffusion-v1-5-inpainting', inputs);
 
         return new Response(response, {
-          headers: { 'Content-Type': 'image/png' }
+          headers: {
+            'Content-Type': 'image/png',
+            'Cache-Control': 'no-store'
+          }
         });
-
       } catch (error) {
-        return new Response(error.message || 'Server Exception Occurred', { status: 500 });
+        return new Response(error?.message || 'Server exception occurred', { status: 500 });
       }
     }
 
