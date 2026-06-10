@@ -126,14 +126,10 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
   const OUTPUT_WIDTH = 500;
   const OUTPUT_HEIGHT = 750;
 
-  // Workers AI inpainting needs dimensions divisible by 8.
   const INFER_WIDTH = 504;
   const INFER_HEIGHT = 752;
   const PAD_X = 2;
   const PAD_Y = 1;
-
-  const AI_DETECT_MODEL = '@cf/meta/llama-4-scout-17b-16e-instruct';
-  const AI_INPAINT_MODEL = '@cf/runwayml/stable-diffusion-v1-5-inpainting';
 
   const uploadEl = document.getElementById('upload');
   const generateBtn = document.getElementById('generateBtn');
@@ -217,91 +213,27 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     });
   }
 
-  function getLuma(r, g, b) {
-    return 0.299 * r + 0.587 * g + 0.114 * b;
-  }
-
   function clamp(v, min, max) {
     return Math.max(min, Math.min(max, v));
   }
 
-  function arrayBufferToBase64(buffer) {
-    const bytes = new Uint8Array(buffer);
-    let binary = '';
-    const chunkSize = 0x8000;
+  function analyzeTextRegions() {
+    return canvasToBlob(imgCanvas, 'image/png').then(imageBlob => {
+      const formData = new FormData();
+      formData.append('image', imageBlob, 'poster.png');
 
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-      binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
-    }
-
-    return btoa(binary);
-  }
-
-  function blobToDataUrl(blob) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(reader.result);
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
-}
-
-  function parseJsonFromModel(raw) {
-    if (!raw) return null;
-    if (typeof raw === 'object') return raw;
-
-    let text = String(raw).trim();
-
-    text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-
-    try {
-      return JSON.parse(text);
-    } catch {
-      const match = text.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
-      if (!match) return null;
-      try {
-        return JSON.parse(match[0]);
-      } catch {
-        return null;
-      }
-    }
-  }
-
-  function normalizeRegions(payload, width, height) {
-    const regions = Array.isArray(payload?.regions) ? payload.regions : [];
-    const cleaned = [];
-
-    for (const r of regions) {
-      const x = Math.round(Number(r?.x));
-      const y = Math.round(Number(r?.y));
-      const w = Math.round(Number(r?.w));
-      const h = Math.round(Number(r?.h));
-      const confidence = Number.isFinite(Number(r?.confidence)) ? Number(r.confidence) : 1;
-
-      if (![x, y, w, h].every(Number.isFinite)) continue;
-      if (confidence < 0.2) continue;
-
-      const nx = clamp(x, 0, width - 1);
-      const ny = clamp(y, 0, height - 1);
-      const nw = clamp(w, 1, width - nx);
-      const nh = clamp(h, 1, height - ny);
-
-      const areaRatio = (nw * nh) / (width * height);
-      if (areaRatio < 0.00005) continue;
-      if (areaRatio > 0.18) continue;
-      if (nw < 3 || nh < 3) continue;
-
-      cleaned.push({
-        x: nx,
-        y: ny,
-        w: nw,
-        h: nh,
-        confidence: Math.max(0, Math.min(1, confidence)),
-        label: typeof r?.label === 'string' ? r.label : 'text'
+      return fetch('/api/analyze', {
+        method: 'POST',
+        body: formData
       });
-    }
-
-    return cleaned;
+    }).then(res => {
+      if (!res.ok) {
+        return res.text().then(errText => { throw new Error(errText); });
+      }
+      return res.json();
+    }).then(data => {
+      return Array.isArray(data.regions) ? data.regions : [];
+    });
   }
 
   function drawRegionsToMask(regions, width, height, canvas) {
@@ -366,82 +298,62 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     return outCanvas;
   }
 
-  async function analyzeTextRegions() {
-    const imageBlob = await canvasToBlob(imgCanvas, 'image/png');
-    const formData = new FormData();
-    formData.append('image', imageBlob, 'poster.png');
+  function compositeFinalImage(originalCanvas, inpaintedBlob, maskCanvas) {
+    return imageBlobToImage(inpaintedBlob).then(inpaintedImg => {
+      const inferCanvas = document.createElement('canvas');
+      inferCanvas.width = INFER_WIDTH;
+      inferCanvas.height = INFER_HEIGHT;
+      const inferCtx = inferCanvas.getContext('2d', { willReadFrequently: true });
+      inferCtx.drawImage(inpaintedImg, 0, 0, INFER_WIDTH, INFER_HEIGHT);
 
-    const res = await fetch('/api/analyze', {
-      method: 'POST',
-      body: formData
+      const croppedInpainted = inferCtx.getImageData(PAD_X, PAD_Y, OUTPUT_WIDTH, OUTPUT_HEIGHT).data;
+      const originalData = originalCanvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT).data;
+
+      const featherCanvas = document.createElement('canvas');
+      featherCanvas.width = OUTPUT_WIDTH;
+      featherCanvas.height = OUTPUT_HEIGHT;
+      const featherCtx = featherCanvas.getContext('2d', { willReadFrequently: true });
+      featherCtx.filter = 'blur(2px)';
+      featherCtx.drawImage(maskCanvas, 0, 0);
+      featherCtx.filter = 'none';
+      const featherData = featherCtx.getImageData(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT).data;
+
+      const finalCanvas = document.createElement('canvas');
+      finalCanvas.width = OUTPUT_WIDTH;
+      finalCanvas.height = OUTPUT_HEIGHT;
+      const finalCtx = finalCanvas.getContext('2d', { willReadFrequently: true });
+      const out = finalCtx.createImageData(OUTPUT_WIDTH, OUTPUT_HEIGHT);
+
+      for (let i = 0; i < out.data.length; i += 4) {
+        const alpha = featherData[i] / 255;
+        out.data[i] = Math.round(originalData[i] * (1 - alpha) + croppedInpainted[i] * alpha);
+        out.data[i + 1] = Math.round(originalData[i + 1] * (1 - alpha) + croppedInpainted[i + 1] * alpha);
+        out.data[i + 2] = Math.round(originalData[i + 2] * (1 - alpha) + croppedInpainted[i + 2] * alpha);
+        out.data[i + 3] = 255;
+      }
+
+      finalCtx.putImageData(out, 0, 0);
+      return canvasToBlob(finalCanvas, 'image/png');
     });
-
-    if (!res.ok) {
-      throw new Error(await res.text());
-    }
-
-    const data = await res.json();
-    return Array.isArray(data.regions) ? data.regions : [];
   }
 
-  async function compositeFinalImage(originalCanvas, inpaintedBlob, maskCanvas) {
-    const inpaintedImg = await imageBlobToImage(inpaintedBlob);
-
-    const inferCanvas = document.createElement('canvas');
-    inferCanvas.width = INFER_WIDTH;
-    inferCanvas.height = INFER_HEIGHT;
-    const inferCtx = inferCanvas.getContext('2d', { willReadFrequently: true });
-    inferCtx.drawImage(inpaintedImg, 0, 0, INFER_WIDTH, INFER_HEIGHT);
-
-    const croppedInpainted = inferCtx.getImageData(PAD_X, PAD_Y, OUTPUT_WIDTH, OUTPUT_HEIGHT).data;
-    const originalData = originalCanvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT).data;
-
-    const featherCanvas = document.createElement('canvas');
-    featherCanvas.width = OUTPUT_WIDTH;
-    featherCanvas.height = OUTPUT_HEIGHT;
-    const featherCtx = featherCanvas.getContext('2d', { willReadFrequently: true });
-    featherCtx.filter = 'blur(2px)';
-    featherCtx.drawImage(maskCanvas, 0, 0);
-    featherCtx.filter = 'none';
-    const featherData = featherCtx.getImageData(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT).data;
-
-    const finalCanvas = document.createElement('canvas');
-    finalCanvas.width = OUTPUT_WIDTH;
-    finalCanvas.height = OUTPUT_HEIGHT;
-    const finalCtx = finalCanvas.getContext('2d', { willReadFrequently: true });
-    const out = finalCtx.createImageData(OUTPUT_WIDTH, OUTPUT_HEIGHT);
-
-    for (let i = 0; i < out.data.length; i += 4) {
-      const alpha = featherData[i] / 255;
-
-      out.data[i] = Math.round(originalData[i] * (1 - alpha) + croppedInpainted[i] * alpha);
-      out.data[i + 1] = Math.round(originalData[i + 1] * (1 - alpha) + croppedInpainted[i + 1] * alpha);
-      out.data[i + 2] = Math.round(originalData[i + 2] * (1 - alpha) + croppedInpainted[i + 2] * alpha);
-      out.data[i + 3] = 255;
-    }
-
-    finalCtx.putImageData(out, 0, 0);
-    return canvasToBlob(finalCanvas, 'image/png');
-  }
-
-  async function inpaintPoster(imageBlob, maskBlob) {
+  function inpaintPoster(imageBlob, maskBlob) {
     const formData = new FormData();
     formData.append('image', imageBlob, 'poster.png');
     formData.append('mask', maskBlob, 'mask.png');
 
-    const res = await fetch('/api/inpaint', {
+    return fetch('/api/inpaint', {
       method: 'POST',
       body: formData
+    }).then(res => {
+      if (!res.ok) {
+        return res.text().then(errText => { throw new Error(errText); });
+      }
+      return res.blob();
     });
-
-    if (!res.ok) {
-      throw new Error(await res.text());
-    }
-
-    return res.blob();
   }
 
-  async function processPoster() {
+  function processPoster() {
     if (isProcessing) return;
     if (!currentFile) {
       showError('Upload an image first.');
@@ -451,42 +363,47 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     clearError();
     previewSectionEl.classList.add('hidden');
     setLoading(true, 'AI is locating text regions...');
-
     isProcessing = true;
 
-    try {
-      const regions = await analyzeTextRegions();
+    analyzeTextRegions()
+      .then(regions => {
+        if (!regions.length) {
+          throw new Error('AI returned no text regions for this poster.');
+        }
 
-      if (!regions.length) {
-        throw new Error('AI returned no text regions for this poster.');
-      }
+        drawRegionsToMask(regions, OUTPUT_WIDTH, OUTPUT_HEIGHT, maskPreviewCanvas);
 
-      drawRegionsToMask(regions, OUTPUT_WIDTH, OUTPUT_HEIGHT, maskPreviewCanvas);
+        const paddedImageCanvas = buildPaddedCanvasFromCanvas(imgCanvas, INFER_WIDTH, INFER_HEIGHT, PAD_X, PAD_Y, false);
+        const paddedMaskCanvas = buildPaddedCanvasFromCanvas(maskPreviewCanvas, INFER_WIDTH, INFER_HEIGHT, PAD_X, PAD_Y, true);
 
-      const paddedImageCanvas = buildPaddedCanvasFromCanvas(imgCanvas, INFER_WIDTH, INFER_HEIGHT, PAD_X, PAD_Y, false);
-      const paddedMaskCanvas = buildPaddedCanvasFromCanvas(maskPreviewCanvas, INFER_WIDTH, INFER_HEIGHT, PAD_X, PAD_Y, true);
-
-      const paddedImageBlob = await canvasToBlob(paddedImageCanvas, 'image/png');
-      const paddedMaskBlob = await canvasToBlob(paddedMaskCanvas, 'image/png');
-
-      setLoading(true, 'Inpainting only the detected text regions...');
-
-      const inpaintedBlob = await inpaintPoster(paddedImageBlob, paddedMaskBlob);
-      const finalBlob = await compositeFinalImage(imgCanvas, inpaintedBlob, maskPreviewCanvas);
-
-      revokeResultUrl();
-      currentObjectUrl = URL.createObjectURL(finalBlob);
-      resultImgEl.src = currentObjectUrl;
-      previewSectionEl.classList.remove('hidden');
-    } catch (err) {
-      showError('Error: ' + (err?.message || String(err)));
-    } finally {
-      isProcessing = false;
-      setLoading(false);
-    }
+        return Promise.all([
+          canvasToBlob(paddedImageCanvas, 'image/png'),
+          canvasToBlob(paddedMaskCanvas, 'image/png')
+        ]);
+      })
+      .then(([paddedImageBlob, paddedMaskBlob]) => {
+        setLoading(true, 'Inpainting only the detected text regions...');
+        return inpaintPoster(paddedImageBlob, paddedMaskBlob);
+      })
+      .then(inpaintedBlob => {
+        return compositeFinalImage(imgCanvas, inpaintedBlob, maskPreviewCanvas);
+      })
+      .then(finalBlob => {
+        revokeResultUrl();
+        currentObjectUrl = URL.createObjectURL(finalBlob);
+        resultImgEl.src = currentObjectUrl;
+        previewSectionEl.classList.remove('hidden');
+      })
+      .catch(err => {
+        showError('Error: ' + (err?.message || String(err)));
+      })
+      .finally(() => {
+        isProcessing = false;
+        setLoading(false);
+      });
   }
 
-  async function loadAndDrawFile(file) {
+  function loadAndDrawFile(file) {
     if (!file) return;
     currentFile = file;
     clearError();
@@ -494,29 +411,25 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     previewSectionEl.classList.add('hidden');
 
     const reader = new FileReader();
-    reader.onload = async (event) => {
-      try {
-        const img = new Image();
-        img.onload = async () => {
-          drawImageCover(imgCtx, img, OUTPUT_WIDTH, OUTPUT_HEIGHT);
-        };
-        img.onerror = () => showError('Could not read the image file.');
-        img.src = event.target.result;
-      } catch (err) {
-        showError('Could not load image: ' + (err?.message || String(err)));
-      }
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        drawImageCover(imgCtx, img, OUTPUT_WIDTH, OUTPUT_HEIGHT);
+      };
+      img.onerror = () => showError('Could not read the image file.');
+      img.src = event.target.result;
     };
     reader.onerror = () => showError('Could not read the file.');
     reader.readAsDataURL(file);
   }
 
-  uploadEl.addEventListener('change', async (e) => {
+  uploadEl.addEventListener('change', (e) => {
     const file = e.target.files && e.target.files[0];
-    await loadAndDrawFile(file);
+    loadAndDrawFile(file);
   });
 
-  generateBtn.addEventListener('click', async () => {
-    await processPoster();
+  generateBtn.addEventListener('click', () => {
+    processPoster();
   });
 
   resetBtn.addEventListener('click', () => {
@@ -604,7 +517,18 @@ function parseJsonFromModel(raw) {
   if (typeof raw === 'object') return raw;
 
   let text = String(raw).trim();
-  text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  
+  // Replaced the complex regex with simpler, sequential replacements 
+  // that bundlers/minifiers won't trip over.
+  if (text.startsWith('```json')) {
+    text = text.slice(7);
+  } else if (text.startsWith('```')) {
+    text = text.slice(3);
+  }
+  if (text.endsWith('```')) {
+    text = text.slice(0, -3);
+  }
+  text = text.trim();
 
   try {
     return JSON.parse(text);
@@ -666,7 +590,7 @@ function extractAiText(result) {
 
 async function buildDataUrlFromFile(file) {
   const buffer = await file.arrayBuffer();
-  const mime = file.type || 'image/png';
+  const mime = encodeURIComponent(file.type || 'image/png');
   return `data:${mime};base64,${arrayBufferToBase64(buffer)}`;
 }
 
