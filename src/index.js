@@ -1,3 +1,5 @@
+// src/index.js
+
 const HTML_CONTENT = String.raw`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -296,10 +298,6 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     return { map: out, mean, std: Math.sqrt(variance) };
   }
 
-  function addToScoreMap(score, add, weight = 1) {
-    for (let i = 0; i < score.length; i++) score[i] += add[i] * weight;
-  }
-
   function thresholdMap(map, width, height, threshold) {
     const out = new Uint8Array(width * height);
     for (let i = 0; i < map.length; i++) out[i] = map[i] >= threshold ? 1 : 0;
@@ -426,89 +424,6 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     return mask;
   }
 
-  function mergeBoxes(boxes, xGap, yGap) {
-    let cur = boxes.map(b => ({ ...b }));
-    let changed = true;
-
-    const closeEnough = (a, b) => {
-      const hg = Math.max(0, Math.max(a.minX, b.minX) - Math.min(a.maxX, b.maxX) - 1);
-      const vg = Math.max(0, Math.max(a.minY, b.minY) - Math.min(a.maxY, b.maxY) - 1);
-      return hg <= xGap && vg <= yGap;
-    };
-
-    while (changed) {
-      changed = false;
-      cur.sort((a, b) => a.minY - b.minY || a.minX - b.minX);
-      const next = [];
-      for (const box of cur) {
-        let merged = false;
-        for (const target of next) {
-          if (closeEnough(target, box)) {
-            target.minX = Math.min(target.minX, box.minX);
-            target.minY = Math.min(target.minY, box.minY);
-            target.maxX = Math.max(target.maxX, box.maxX);
-            target.maxY = Math.max(target.maxY, box.maxY);
-            merged = true;
-            changed = true;
-            break;
-          }
-        }
-        if (!merged) next.push({ ...box });
-      }
-      cur = next;
-    }
-
-    return cur;
-  }
-
-  function scoreComponent(c, width, height, edgeMap, contrastMap, grayMap) {
-    const boxW = c.maxX - c.minX + 1;
-    const boxH = c.maxY - c.minY + 1;
-    const boxArea = Math.max(1, boxW * boxH);
-    const areaRatio = c.area / (width * height);
-    const fill = c.area / boxArea;
-    const aspect = boxW / Math.max(1, boxH);
-    const cx = (c.minX + c.maxX) / 2 / width;
-    const cy = (c.minY + c.maxY) / 2 / height;
-
-    let edgeSum = 0, contrastSum = 0, graySum = 0;
-    for (let y = c.minY; y <= c.maxY; y++) {
-      const row = y * width;
-      for (let x = c.minX; x <= c.maxX; x++) {
-        const idx = row + x;
-        edgeSum += edgeMap[idx] || 0;
-        contrastSum += contrastMap[idx] || 0;
-        graySum += grayMap[idx] || 0;
-      }
-    }
-
-    const edgeMean = edgeSum / boxArea;
-    const contrastMean = contrastSum / boxArea;
-    const grayMean = graySum / boxArea;
-
-    let s = 0;
-
-    if (areaRatio >= 0.00005 && areaRatio <= 0.08) s += 1.2;
-    if (fill >= 0.02 && fill <= 0.85) s += 1.0;
-    if (aspect >= 0.15 && aspect <= 30) s += 0.8;
-    if (aspect >= 1.2) s += 0.8;
-    if (boxH <= height * 0.38) s += 0.5;
-    if (cy >= 0.35) s += 0.7;
-    if (cy >= 0.55) s += 0.8;
-    if (cx >= 0.12 && cx <= 0.88) s += 0.8;
-    if (grayMean >= 90) s += 0.5;
-    if (grayMean >= 130) s += 0.4;
-    s += Math.min(2.2, edgeMean / 22);
-    s += Math.min(1.8, contrastMean / 18);
-
-    if (c.minX <= 4 || c.maxX >= width - 5) s -= 1.2;
-    if (c.minY <= 4) s -= 0.3;
-    if (boxH > height * 0.45) s -= 1.5;
-    if (aspect < 0.12 && boxH > height * 0.12) s -= 1.0;
-
-    return s;
-  }
-
   function sumMask(mask) {
     let c = 0;
     for (let i = 0; i < mask.length; i++) c += mask[i] ? 1 : 0;
@@ -575,8 +490,8 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
 
     const border = maskBorderPenalty(mask, width, height);
     const components = extractComponents(mask, width, height);
-    const medium = components.filter(c => c.area >= 20 && c.area <= width * height * 0.03).length;
-    const wide = components.filter(c => (c.maxX - c.minX + 1) / Math.max(1, (c.maxY - c.minY + 1)) > 1.3).length;
+    const medium = components.filter(comp => comp.area >= 20 && comp.area <= width * height * 0.03).length;
+    const wide = components.filter(comp => (comp.maxX - comp.minX + 1) / Math.max(1, (comp.maxY - comp.minY + 1)) > 1.3).length;
 
     let s = 0;
     s += Math.max(0, 2.5 - Math.abs(cover - 0.055) * 25);
@@ -778,3 +693,49 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
 </script>
 </body>
 </html>`;
+
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+
+    // 1. Serve UI Interface Dashboard
+    if (url.pathname === '/' || url.pathname === '/index.html') {
+      return new Response(HTML_CONTENT, {
+        headers: { 'content-type': 'text/html;charset=UTF-8' },
+      });
+    }
+
+    // 2. Multi-Part Binary Processing Endpoint
+    if (url.pathname === '/api/inpainting' && request.method === 'POST') {
+      try {
+        const formData = await request.formData();
+        const imageFile = formData.get('image');
+        const maskFile = formData.get('mask');
+
+        if (!imageFile || !maskFile) {
+          return new Response('Missing payload targets (image or mask).', { status: 400 });
+        }
+
+        const imageBuffer = await imageFile.arrayBuffer();
+        const maskBuffer = await maskFile.arrayBuffer();
+
+        // Execution of the Neural Node using context module parameters
+        const response = await env.AI.run('@cf/stabilityai/stable-diffusion-xl-inpainting', {
+          prompt: 'seamless background texture fill, clear poster graphics backdrop, high quality, text completely removed',
+          image: [...new Uint8Array(imageBuffer)],
+          mask: [...new Uint8Array(maskBuffer)],
+        });
+
+        return new Response(response, {
+          headers: { 'content-type': 'image/jpeg' },
+        });
+
+      } catch (error) {
+        return new Response(error.message || 'Internal AI Model Framework Error', { status: 500 });
+      }
+    }
+
+    // Default Fallback Response
+    return new Response('Resource Route Node Not Found', { status: 404 });
+  }
+};
