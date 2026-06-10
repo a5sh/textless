@@ -126,7 +126,7 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
   const OUTPUT_WIDTH = 500;
   const OUTPUT_HEIGHT = 750;
 
-  // Workers AI requires dimensions divisible by 8
+  // Workers AI inpainting needs dimensions divisible by 8
   const INFER_WIDTH = 504;
   const INFER_HEIGHT = 752;
   const PAD_X = 2;
@@ -216,6 +216,44 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
 
   function getLuma(r, g, b) {
     return 0.299 * r + 0.587 * g + 0.114 * b;
+  }
+
+  function boxBlur(gray, width, height, radius) {
+    const out = new Float32Array(width * height);
+    const tmp = new Float32Array(width * height);
+
+    // Horizontal pass
+    for (let y = 0; y < height; y++) {
+      const row = y * width;
+      let sum = 0;
+      for (let x = -radius; x <= radius; x++) {
+        const clampedX = Math.max(0, Math.min(width - 1, x));
+        sum += gray[row + clampedX];
+      }
+      for (let x = 0; x < width; x++) {
+        tmp[row + x] = sum / (radius * 2 + 1);
+        const removeX = Math.max(0, x - radius);
+        const addX = Math.min(width - 1, x + radius + 1);
+        sum += gray[row + addX] - gray[row + removeX];
+      }
+    }
+
+    // Vertical pass
+    for (let x = 0; x < width; x++) {
+      let sum = 0;
+      for (let y = -radius; y <= radius; y++) {
+        const clampedY = Math.max(0, Math.min(height - 1, y));
+        sum += tmp[clampedY * width + x];
+      }
+      for (let y = 0; y < height; y++) {
+        out[y * width + x] = sum / (radius * 2 + 1);
+        const removeY = Math.max(0, y - radius);
+        const addY = Math.min(height - 1, y + radius + 1);
+        sum += tmp[addY * width + x] - tmp[removeY * width + x];
+      }
+    }
+
+    return out;
   }
 
   function computeEdges(imageData) {
@@ -401,15 +439,22 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     const aspect = boxW / Math.max(1, boxH);
     const edgeDensity = component.edgeSum / Math.max(1, component.area);
     const edgeRel = edgeDensity / Math.max(1e-6, edgeMean + edgeStd * 0.5);
+    const centerY = (component.minY + component.maxY) * 0.5 / height;
+    const areaRatio = component.area / (width * height);
 
     let score = 0;
 
-    if (component.area >= settings.minArea && component.area <= width * height * settings.maxAreaRatio) score++;
+    if (areaRatio >= settings.minAreaRatio && areaRatio <= settings.maxAreaRatio) score++;
     if (fill >= settings.minFill && fill <= settings.maxFill) score++;
     if (edgeRel >= settings.minEdgeRel) score++;
-    if (boxW >= 10 && boxH >= 4) score++;
-    if (aspect >= 1.15 || aspect <= 0.88) score++;
-    if (boxW >= 18 || boxH >= 18) score++;
+    if (boxW >= settings.minBoxW && boxH >= settings.minBoxH) score++;
+    if (aspect >= settings.minAspect && aspect <= settings.maxAspect) score++;
+    if (boxH <= height * settings.maxHeightRatio) score++;
+    if (centerY >= settings.preferredLowerBand) score++;
+
+    if (centerY < settings.upperRejectBand) score -= 1;
+    if (boxH > height * 0.18 && aspect < 0.20) score -= 2;
+    if (boxH > height * 0.28) score -= 3;
 
     return score >= settings.minScore;
   }
@@ -483,73 +528,113 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
 
   function buildTextMask(imageData) {
     const { width, height } = imageData;
-    const { edges, mean, std } = computeEdges(imageData);
     const totalPixels = width * height;
 
-    const tries = [
-      {
-        edgeStdFactor: 0.95,
-        minArea: 12,
-        maxAreaRatio: 0.035,
-        minFill: 0.03,
-        maxFill: 0.58,
-        minEdgeRel: 0.82,
-        minScore: 4,
-        dilatePasses: 1,
-        padX: 4,
-        padY: 3,
-        mergeXGap: 16,
-        mergeYGap: 10
-      },
-      {
-        edgeStdFactor: 0.65,
-        minArea: 10,
-        maxAreaRatio: 0.05,
-        minFill: 0.02,
-        maxFill: 0.68,
-        minEdgeRel: 0.72,
-        minScore: 4,
-        dilatePasses: 2,
-        padX: 6,
-        padY: 4,
-        mergeXGap: 18,
-        mergeYGap: 12
-      }
-    ];
+    const { gray, edges, mean: edgeMean, std: edgeStd } = computeEdges(imageData);
 
-    let bestMask = new Uint8Array(totalPixels);
+    // Local-contrast map: text tends to be compact, high-contrast, and layered over background.
+    const blurA = boxBlur(gray, width, height, 6);
+    const blurB = boxBlur(gray, width, height, 12);
 
-    for (const settings of tries) {
-      const threshold = mean + std * settings.edgeStdFactor;
-      const candidate = new Uint8Array(totalPixels);
+    const contrast = new Float32Array(totalPixels);
+    let cSum = 0;
+    let cSumSq = 0;
+    for (let i = 0; i < totalPixels; i++) {
+      const d1 = Math.abs(gray[i] - blurA[i]);
+      const d2 = Math.abs(gray[i] - blurB[i]);
+      const v = Math.max(d1, d2);
+      contrast[i] = v;
+      cSum += v;
+      cSumSq += v * v;
+    }
 
-      for (let i = 0; i < totalPixels; i++) {
-        candidate[i] = edges[i] >= threshold ? 1 : 0;
-      }
+    const cMean = cSum / totalPixels;
+    const cVar = Math.max(0, cSumSq / totalPixels - cMean * cMean);
+    const cStd = Math.sqrt(cVar);
 
-      let working = dilateBinaryMap(candidate, width, height, settings.dilatePasses);
-      working = erodeBinaryMap(working, width, height, 1);
+    const candidates = new Uint8Array(totalPixels);
 
-      const components = extractComponents(working, edges, width, height);
+    const detailThreshold = cMean + 1.85 * cStd;
+    const edgeThreshold = edgeMean + 1.90 * edgeStd;
 
-      const textBoxes = [];
-      for (const comp of components) {
-        if (componentLooksLikeText(comp, width, height, mean, std, settings)) {
-          textBoxes.push(comp);
-        }
-      }
+    for (let i = 0; i < totalPixels; i++) {
+      const isContrast = contrast[i] >= detailThreshold;
+      const isEdge = edges[i] >= edgeThreshold;
+      candidates[i] = (isContrast || isEdge) ? 1 : 0;
+    }
 
-      const merged = mergeBoxes(textBoxes, settings.mergeXGap, settings.mergeYGap);
-      const mask = fillBoxesToMask(merged, width, height, settings.padX, settings.padY);
+    let working = dilateBinaryMap(candidates, width, height, 1);
+    working = erodeBinaryMap(working, width, height, 1);
 
-      bestMask = mask;
+    const components = extractComponents(working, edges, width, height);
 
-      if (countMaskPixels(mask) > totalPixels * 0.004) {
-        break;
+    const settings = {
+      minAreaRatio: 0.00002,
+      maxAreaRatio: 0.055,
+      minFill: 0.035,
+      maxFill: 0.88,
+      minEdgeRel: 0.84,
+      minBoxW: 6,
+      minBoxH: 4,
+      minAspect: 0.09,
+      maxAspect: 14,
+      maxHeightRatio: 0.30,
+      preferredLowerBand: 0.28,
+      upperRejectBand: 0.18,
+      minScore: 4,
+      padX: 5,
+      padY: 4,
+      mergeXGap: 18,
+      mergeYGap: 12
+    };
+
+    const textBoxes = [];
+    for (const comp of components) {
+      if (componentLooksLikeText(comp, width, height, edgeMean, edgeStd, settings)) {
+        textBoxes.push(comp);
       }
     }
 
-    return dilateBinaryMap(bestMask, width, height, 1);
+    const merged = mergeBoxes(textBoxes, settings.mergeXGap, settings.mergeYGap);
+    let mask = fillBoxesToMask(merged, width, height, settings.padX, settings.padY);
+
+    // Final cleanup to remove very thin vertical artifacts from fire escapes / railings.
+    mask = dilateBinaryMap(erodeBinaryMap(mask, width, height, 1), width, height, 1);
+
+    // Fallback: if detection gets too timid, soften the threshold once.
+    const maskPixels = countMaskPixels(mask);
+    if (maskPixels < totalPixels * 0.004) {
+      const fallback = new Uint8Array(totalPixels);
+      const fallbackThreshold = cMean + 1.45 * cStd;
+
+      for (let i = 0; i < totalPixels; i++) {
+        fallback[i] = contrast[i] >= fallbackThreshold ? 1 : 0;
+      }
+
+      let fallbackWork = dilateBinaryMap(fallback, width, height, 1);
+      fallbackWork = erodeBinaryMap(fallbackWork, width, height, 1);
+      const fallbackComponents = extractComponents(fallbackWork, edges, width, height);
+
+      const fallbackBoxes = [];
+      for (const comp of fallbackComponents) {
+        const looseSettings = {
+          ...settings,
+          minScore: 3,
+          maxHeightRatio: 0.34,
+          preferredLowerBand: 0.24,
+          upperRejectBand: 0.14
+        };
+        if (componentLooksLikeText(comp, width, height, edgeMean, edgeStd, looseSettings)) {
+          fallbackBoxes.push(comp);
+        }
+      }
+
+      const fallbackMerged = mergeBoxes(fallbackBoxes, 20, 14);
+      mask = fillBoxesToMask(fallbackMerged, width, height, 6, 5);
+      mask = dilateBinaryMap(erodeBinaryMap(mask, width, height, 1), width, height, 1);
+    }
+
+    return mask;
   }
 
   function maskToCanvas(mask, width, height, canvas) {
@@ -585,53 +670,58 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     const sw = sourceCanvas.width;
     const sh = sourceCanvas.height;
 
-    // Center draw
     ctx.drawImage(sourceCanvas, padX, padY);
 
-    // Edge extension so the extra pixels are not empty shells.
     if (padX > 0) {
-      // Left strip
       ctx.drawImage(sourceCanvas, 0, 0, 1, sh, 0, padY, padX, sh);
-      // Right strip
       ctx.drawImage(sourceCanvas, sw - 1, 0, 1, sh, padX + sw, padY, outWidth - (padX + sw), sh);
     }
 
     if (padY > 0) {
-      // Top strip
       ctx.drawImage(sourceCanvas, 0, 0, sw, 1, 0, 0, outWidth, padY);
-      // Bottom strip
       ctx.drawImage(sourceCanvas, 0, sh - 1, sw, 1, 0, padY + sh, outWidth, outHeight - (padY + sh));
     }
 
     return outCanvas;
   }
 
-  async function cropResultToOutputSize(resultBlob) {
-    const resultImg = await imageBlobToImage(resultBlob);
+  async function compositeFinalImage(originalCanvas, inpaintedBlob, maskCanvas) {
+    const inpaintedImg = await imageBlobToImage(inpaintedBlob);
+
     const inferCanvas = document.createElement('canvas');
     inferCanvas.width = INFER_WIDTH;
     inferCanvas.height = INFER_HEIGHT;
-
     const inferCtx = inferCanvas.getContext('2d', { willReadFrequently: true });
-    inferCtx.drawImage(resultImg, 0, 0, INFER_WIDTH, INFER_HEIGHT);
+    inferCtx.drawImage(inpaintedImg, 0, 0, INFER_WIDTH, INFER_HEIGHT);
+
+    const croppedInpainted = inferCtx.getImageData(PAD_X, PAD_Y, OUTPUT_WIDTH, OUTPUT_HEIGHT).data;
+    const originalData = originalCanvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT).data;
+
+    const featherCanvas = document.createElement('canvas');
+    featherCanvas.width = OUTPUT_WIDTH;
+    featherCanvas.height = OUTPUT_HEIGHT;
+    const featherCtx = featherCanvas.getContext('2d', { willReadFrequently: true });
+    featherCtx.filter = 'blur(2px)';
+    featherCtx.drawImage(maskCanvas, 0, 0);
+    featherCtx.filter = 'none';
+    const featherData = featherCtx.getImageData(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT).data;
 
     const finalCanvas = document.createElement('canvas');
     finalCanvas.width = OUTPUT_WIDTH;
     finalCanvas.height = OUTPUT_HEIGHT;
-
     const finalCtx = finalCanvas.getContext('2d', { willReadFrequently: true });
-    finalCtx.drawImage(
-      inferCanvas,
-      PAD_X,
-      PAD_Y,
-      OUTPUT_WIDTH,
-      OUTPUT_HEIGHT,
-      0,
-      0,
-      OUTPUT_WIDTH,
-      OUTPUT_HEIGHT
-    );
+    const out = finalCtx.createImageData(OUTPUT_WIDTH, OUTPUT_HEIGHT);
 
+    for (let i = 0; i < out.data.length; i += 4) {
+      const alpha = featherData[i] / 255;
+
+      out.data[i] = Math.round(originalData[i] * (1 - alpha) + croppedInpainted[i] * alpha);
+      out.data[i + 1] = Math.round(originalData[i + 1] * (1 - alpha) + croppedInpainted[i + 1] * alpha);
+      out.data[i + 2] = Math.round(originalData[i + 2] * (1 - alpha) + croppedInpainted[i + 2] * alpha);
+      out.data[i + 3] = 255;
+    }
+
+    finalCtx.putImageData(out, 0, 0);
     return canvasToBlob(finalCanvas, 'image/png');
   }
 
@@ -649,7 +739,6 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     isProcessing = true;
 
     try {
-      const originalBlob = await canvasToBlob(imgCanvas, 'image/png');
       const imageData = imgCtx.getImageData(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
       const mask = buildTextMask(imageData);
 
@@ -677,7 +766,7 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
       }
 
       const inpaintedBlob = await res.blob();
-      const finalBlob = await cropResultToOutputSize(inpaintedBlob);
+      const finalBlob = await compositeFinalImage(imgCanvas, inpaintedBlob, maskPreviewCanvas);
 
       revokeResultUrl();
       currentObjectUrl = URL.createObjectURL(finalBlob);
@@ -807,9 +896,9 @@ export default {
           mask: Array.from(new Uint8Array(maskBuffer)),
           width: 504,
           height: 752,
-          num_steps: 20,
-          strength: 0.65,
-          guidance: 4.25
+          num_steps: 16,
+          strength: 0.58,
+          guidance: 4.0
         };
 
         const response = await env.AI.run('@cf/runwayml/stable-diffusion-v1-5-inpainting', inputs);
