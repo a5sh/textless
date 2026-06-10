@@ -21,38 +21,62 @@ const HTML_CONTENT = `<!DOCTYPE html>
     left: 0;
     width: 100%;
     height: 100%;
-    cursor: crosshair;
+  }
+  .preview-container {
+    display: flex;
+    gap: 1rem;
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid #e5e7eb;
+  }
+  .preview-item {
+    flex: 1;
+    text-align: center;
+  }
+  .preview-item p {
+    font-size: 0.875rem;
+    color: #6b7280;
+    margin-bottom: 0.5rem;
+  }
+  .preview-image {
+    width: 100%;
+    max-width: 200px;
+    height: 300px;
+    border: 1px solid #d1d5db;
+    border-radius: 0.375rem;
+    object-fit: contain;
+    background: #f3f4f6;
   }
 </style>
 </head>
 <body class="bg-slate-50 min-h-screen text-slate-900 p-8 font-sans">
-  <div class="max-w-5xl mx-auto bg-white p-8 rounded-xl shadow-lg border border-slate-200">
-    <h1 class="text-3xl font-extrabold mb-2 text-center text-slate-800">Poster Text Remover</h1>
-    <p class="mb-8 text-center text-slate-500">Upload a raw poster, highlight the text in red, and execute.</p>
+  <div class="max-w-3xl mx-auto bg-white p-8 rounded-xl shadow-lg border border-slate-200">
+    <h1 class="text-3xl font-extrabold mb-2 text-center text-slate-800">Textless Poster Generator</h1>
+    <p class="mb-8 text-center text-slate-500">Upload a text-filled movie poster. AI automatically detects and removes all text seamlessly.</p>
 
-    <div class="flex flex-col lg:flex-row gap-10 justify-center">
-      <div class="flex flex-col items-center w-[500px]">
-        <input type="file" id="upload" accept="image/*" class="mb-4 block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition" />
-        <div class="canvas-container shadow-inner">
-          <canvas id="imgCanvas" width="512" height="768"></canvas>
-          <canvas id="drawCanvas" width="512" height="768"></canvas>
-        </div>
-        <div class="mt-4 flex w-full gap-4 items-center justify-between">
-            <div class="flex items-center gap-2">
-                <label for="brushSize" class="text-sm font-semibold text-slate-600">Brush:</label>
-                <input type="range" id="brushSize" min="5" max="50" value="25" class="cursor-pointer">
-            </div>
-            <button id="clearBtn" class="px-4 py-2 bg-slate-200 text-slate-700 font-semibold rounded hover:bg-slate-300 transition">Clear Mask</button>
-        </div>
+    <div class="flex flex-col items-center">
+      <input type="file" id="upload" accept="image/*" class="mb-6 block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition" />
+      
+      <div class="canvas-container shadow-inner">
+        <canvas id="imgCanvas" width="512" height="768"></canvas>
       </div>
 
-      <div class="flex flex-col items-center w-[500px]">
-        <button id="generateBtn" class="w-full px-6 py-3 bg-indigo-600 text-white rounded-md font-bold hover:bg-indigo-700 disabled:bg-indigo-300 mb-4 transition">Remove Text</button>
-        <div id="loading" class="hidden mb-4 text-indigo-600 font-semibold animate-pulse">Running AI inference... (~15s)</div>
-        <div id="errorMsg" class="hidden mb-4 text-red-600 font-semibold text-sm text-center"></div>
-        <div class="w-[500px] h-[750px] border border-slate-200 bg-slate-100 flex items-center justify-center relative overflow-hidden rounded-md shadow-inner">
-            <img id="resultImg" class="absolute top-0 left-0 w-full h-full object-cover hidden" />
-            <span id="placeholderText" class="text-slate-400 font-medium">Result will appear here</span>
+      <button id="generateBtn" class="w-full px-6 py-3 bg-indigo-600 text-white rounded-md font-bold hover:bg-indigo-700 disabled:bg-indigo-300 mt-6 mb-4 transition">Generate Textless Poster</button>
+      
+      <div id="loading" class="hidden mb-4 text-indigo-600 font-semibold animate-pulse flex items-center gap-2">
+        <div class="w-4 h-4 bg-indigo-600 rounded-full animate-bounce"></div>
+        Detecting text and removing... (~20s)
+      </div>
+      <div id="errorMsg" class="hidden mb-4 text-red-600 font-semibold text-sm text-center max-w-md"></div>
+
+      <div id="previewSection" class="hidden preview-container w-full">
+        <div class="preview-item">
+          <p><strong>Detected Text Regions</strong></p>
+          <canvas id="maskPreviewCanvas" class="preview-image"></canvas>
+        </div>
+        <div class="preview-item">
+          <p><strong>Result</strong></p>
+          <img id="resultImg" class="preview-image" />
         </div>
       </div>
     </div>
@@ -60,16 +84,7 @@ const HTML_CONTENT = `<!DOCTYPE html>
 
   <script>
     const imgCanvas = document.getElementById('imgCanvas');
-    const drawCanvas = document.getElementById('drawCanvas');
-    const imgCtx = imgCanvas.getContext('2d');
-    const drawCtx = drawCanvas.getContext('2d');
-    const brushSize = document.getElementById('brushSize');
-
-    let isDrawing = false;
-    let strokes = [];
-    let currentStroke = [];
-
-    // Force 512x768 buffer logic (required by SD models) mapped to visual 500x750
+    const imgCtx = imgCanvas.getContext('2d', { willReadFrequently: true });
     const SD_WIDTH = 512;
     const SD_HEIGHT = 768;
 
@@ -85,106 +100,100 @@ const HTML_CONTENT = `<!DOCTYPE html>
           const x = (SD_WIDTH / 2) - (img.width / 2) * scale;
           const y = (SD_HEIGHT / 2) - (img.height / 2) * scale;
           imgCtx.drawImage(img, x, y, img.width * scale, img.height * scale);
-          strokes = [];
-          drawCtx.clearRect(0, 0, SD_WIDTH, SD_HEIGHT);
         };
         img.src = event.target.result;
       };
       reader.readAsDataURL(file);
     });
 
-    drawCtx.lineCap = 'round';
-    drawCtx.lineJoin = 'round';
-
-    function getMousePos(canvas, evt) {
-        const rect = canvas.getBoundingClientRect();
-        // Scale handles the difference between internal buffer (512x768) and CSS size (500x750)
-        return {
-            x: (evt.clientX - rect.left) * (canvas.width / rect.width),
-            y: (evt.clientY - rect.top) * (canvas.height / rect.height)
-        };
-    }
-
-    drawCanvas.addEventListener('mousedown', (e) => {
-      isDrawing = true;
-      const pos = getMousePos(drawCanvas, e);
-      currentStroke = [{x: pos.x, y: pos.y, size: parseInt(brushSize.value)}];
-    });
-
-    drawCanvas.addEventListener('mousemove', (e) => {
-      if (!isDrawing) return;
-      const pos = getMousePos(drawCanvas, e);
-      currentStroke.push({x: pos.x, y: pos.y, size: parseInt(brushSize.value)});
-      redrawStrokes();
-    });
-
-    const stopDrawing = () => {
-      if(isDrawing) {
-         isDrawing = false;
-         strokes.push([...currentStroke]);
+    // Sobel edge detection to find text regions
+    function detectTextRegions(imageData) {
+      const width = imageData.width;
+      const height = imageData.height;
+      const data = imageData.data;
+      
+      // Convert to grayscale
+      const gray = new Uint8Array(width * height);
+      for (let i = 0; i < data.length; i += 4) {
+        gray[i >> 2] = 0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2];
       }
-    };
-    drawCanvas.addEventListener('mouseup', stopDrawing);
-    drawCanvas.addEventListener('mouseleave', stopDrawing);
 
-    function redrawStrokes() {
-      drawCtx.clearRect(0, 0, SD_WIDTH, SD_HEIGHT);
-      const allStrokes = [...strokes, currentStroke];
-      allStrokes.forEach(stroke => {
-        if (!stroke || stroke.length === 0) return;
-        drawCtx.beginPath();
-        drawCtx.moveTo(stroke[0].x, stroke[0].y);
-        for (let i = 1; i < stroke.length; i++) {
-          drawCtx.lineTo(stroke[i].x, stroke[i].y);
+      // Sobel edge detection
+      const edges = new Uint8Array(width * height);
+      for (let y = 1; y < height - 1; y++) {
+        for (let x = 1; x < width - 1; x++) {
+          const idx = y * width + x;
+          const gx = (-1 * gray[(y-1)*width + (x-1)]) + (-2 * gray[y*width + (x-1)]) + (-1 * gray[(y+1)*width + (x-1)])
+                   + (1 * gray[(y-1)*width + (x+1)]) + (2 * gray[y*width + (x+1)]) + (1 * gray[(y+1)*width + (x+1)]);
+          const gy = (-1 * gray[(y-1)*width + (x-1)]) + (-2 * gray[(y-1)*width + x]) + (-1 * gray[(y-1)*width + (x+1)])
+                   + (1 * gray[(y+1)*width + (x-1)]) + (2 * gray[(y+1)*width + x]) + (1 * gray[(y+1)*width + (x+1)]);
+          edges[idx] = Math.min(255, Math.sqrt(gx * gx + gy * gy));
         }
-        drawCtx.lineWidth = stroke[0].size;
-        drawCtx.strokeStyle = 'rgba(239, 68, 68, 0.6)'; 
-        drawCtx.stroke();
-      });
-    }
+      }
 
-    document.getElementById('clearBtn').addEventListener('click', () => {
-      strokes = [];
-      currentStroke = [];
-      drawCtx.clearRect(0, 0, SD_WIDTH, SD_HEIGHT);
-    });
+      // Dilate edges to create thicker mask regions
+      const dilated = new Uint8Array(width * height);
+      const threshold = 40;
+      const dilateRadius = 8;
+      
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const idx = y * width + x;
+          let maxEdge = edges[idx];
+          
+          for (let dy = -dilateRadius; dy <= dilateRadius; dy++) {
+            for (let dx = -dilateRadius; dx <= dilateRadius; dx++) {
+              const ny = y + dy;
+              const nx = x + dx;
+              if (ny >= 0 && ny < height && nx >= 0 && nx < width) {
+                maxEdge = Math.max(maxEdge, edges[ny * width + nx]);
+              }
+            }
+          }
+          dilated[idx] = maxEdge > threshold ? 255 : 0;
+        }
+      }
+
+      return dilated;
+    }
 
     document.getElementById('generateBtn').addEventListener('click', async () => {
       const btn = document.getElementById('generateBtn');
       const loading = document.getElementById('loading');
       const errorMsg = document.getElementById('errorMsg');
-      const resultImg = document.getElementById('resultImg');
+      const previewSection = document.getElementById('previewSection');
 
       btn.disabled = true;
       loading.classList.remove('hidden');
       errorMsg.classList.add('hidden');
+      previewSection.classList.add('hidden');
 
       try {
         const imageBlob = await new Promise(resolve => imgCanvas.toBlob(resolve, 'image/png'));
         
-        // Generate valid SD Mask: Black background (keep), White strokes (inpaint area)
-        const tempCanvas = document.createElement('canvas');
-        tempCanvas.width = SD_WIDTH;
-        tempCanvas.height = SD_HEIGHT;
-        const tempCtx = tempCanvas.getContext('2d');
-        tempCtx.fillStyle = 'black';
-        tempCtx.fillRect(0, 0, SD_WIDTH, SD_HEIGHT);
-        
-        tempCtx.lineCap = 'round';
-        tempCtx.lineJoin = 'round';
-        strokes.forEach(stroke => {
-          if (!stroke || stroke.length === 0) return;
-          tempCtx.beginPath();
-          tempCtx.moveTo(stroke[0].x, stroke[0].y);
-          for (let i = 1; i < stroke.length; i++) {
-            tempCtx.lineTo(stroke[i].x, stroke[i].y);
-          }
-          tempCtx.lineWidth = stroke[0].size;
-          tempCtx.strokeStyle = 'white';
-          tempCtx.stroke();
-        });
+        // Detect text regions
+        const imageData = imgCtx.getImageData(0, 0, SD_WIDTH, SD_HEIGHT);
+        const maskData = detectTextRegions(imageData);
 
-        const maskBlob = await new Promise(resolve => tempCanvas.toBlob(resolve, 'image/png'));
+        // Create white mask (inverted: white = remove, black = keep)
+        const maskCanvas = document.createElement('canvas');
+        maskCanvas.width = SD_WIDTH;
+        maskCanvas.height = SD_HEIGHT;
+        const maskCtx = maskCanvas.getContext('2d');
+        const maskImageData = maskCtx.createImageData(SD_WIDTH, SD_HEIGHT);
+        
+        for (let i = 0; i < maskData.length; i++) {
+          maskImageData.data[i * 4] = maskData[i];       // R
+          maskImageData.data[i * 4 + 1] = maskData[i];   // G
+          maskImageData.data[i * 4 + 2] = maskData[i];   // B
+          maskImageData.data[i * 4 + 3] = 255;           // A
+        }
+        maskCtx.putImageData(maskImageData, 0, 0);
+
+        // Show mask preview
+        document.getElementById('maskPreviewCanvas').getContext('2d').drawImage(maskCanvas, 0, 0);
+
+        const maskBlob = await new Promise(resolve => maskCanvas.toBlob(resolve, 'image/png'));
 
         const formData = new FormData();
         formData.append('image', imageBlob);
@@ -194,11 +203,10 @@ const HTML_CONTENT = `<!DOCTYPE html>
         if (!res.ok) throw new Error(await res.text());
 
         const resultBlob = await res.blob();
-        resultImg.src = URL.createObjectURL(resultBlob);
-        resultImg.classList.remove('hidden');
-        document.getElementById('placeholderText').classList.add('hidden');
+        document.getElementById('resultImg').src = URL.createObjectURL(resultBlob);
+        previewSection.classList.remove('hidden');
       } catch(e) {
-        errorMsg.textContent = 'Inference Error: ' + e.message;
+        errorMsg.textContent = 'Error: ' + e.message;
         errorMsg.classList.remove('hidden');
       } finally {
         btn.disabled = false;
@@ -260,4 +268,3 @@ export default {
     return new Response('Resource Not Found', { status: 404 });
   }
 };
-
