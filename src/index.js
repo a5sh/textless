@@ -718,12 +718,16 @@ export default {
 
         const imageBuffer = await imageFile.arrayBuffer();
         const maskBuffer = await maskFile.arrayBuffer();
-// Updated working catalog path
-const response = await env.AI.run('@cf/runwayml/stable-diffusion-v1-5-inpainting', {
-  prompt: 'seamless background texture fill, clear poster graphics backdrop, high quality, text completely removed',
+
+        const response = await env.AI.run('@cf/runwayml/stable-diffusion-v1-5-inpainting', {
+          prompt: `seamless continuation of original background, cinematic movie poster background art, man in red suit standing on stairs, dark cinemaric lighting, continuous textures, detailed scenery, smooth blending, high quality, masterpiece, 8k resolution`,
+  negative_prompt: 'text, words, letters, numbers, typography, font, watermark, logo, title, credits, billing block, signature, caption, subtitle, UI, floating objects, disjointed textures, blurred edges, smudges, poorly drawn, oversaturated, deep-fried',
   image: [...new Uint8Array(imageBuffer)],
-  mask: [...new Uint8Array(maskBuffer)],
-});
+          mask: [...new Uint8Array(maskBuffer)],
+          guidance: 12.5,
+          num_steps: 25,
+          strength: 0.92
+        });
 
         return new Response(response, {
           headers: { 'content-type': 'image/jpeg' },
