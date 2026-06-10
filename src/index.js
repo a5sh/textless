@@ -725,7 +725,7 @@ export default {
   image: [...new Uint8Array(imageBuffer)],
           mask: [...new Uint8Array(maskBuffer)],
           guidance: 12.5,
-          num_steps: 25,
+          num_steps: 20,
           strength: 0.92
         });
 
