@@ -71,7 +71,7 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     <div class="text-center mb-7">
       <h1 class="text-3xl md:text-4xl font-black tracking-tight text-slate-900">Textless Poster Generator</h1>
       <p class="mt-2 text-slate-600">
-        Browser-side text masking with multiple detectors, then Workers AI inpainting.
+        Aggressive text detection with multi-engine masking, then Workers AI inpainting.
       </p>
     </div>
 
@@ -115,7 +115,7 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
       <div id="previewSection" class="hidden w-full mt-8">
         <div class="grid gap-4 md:grid-cols-2">
           <div class="text-center">
-            <p class="mb-2 text-sm font-semibold text-slate-600">Detected Text Mask</p>
+            <p class="mb-2 text-sm font-semibold text-slate-600">Aggressive Text Mask</p>
             <canvas id="maskPreviewCanvas" width="500" height="750" class="mini-preview mx-auto"></canvas>
           </div>
 
@@ -524,22 +524,22 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
       keep.push(c);
     }
 
-    mask = fillComponentBoxes(keep, width, height, 5, 4);
-    mask = close(mask, width, height, 1);
+    mask = fillComponentBoxes(keep, width, height, 8, 6);
+    mask = close(mask, width, height, 2);
     return mask;
   }
 
   function detectorAContrast(gray, width, height) {
-    const blur = boxBlur(gray, width, height, 8);
+    const blur = boxBlur(gray, width, height, 6);
     const score = new Float32Array(width * height);
     let sum = 0, sumSq = 0;
 
     for (let i = 0; i < score.length; i++) {
       const c = Math.abs(gray[i] - blur[i]);
       const y = Math.floor(i / width) / height;
-      const bandBoost = y > 0.52 ? 16 : y > 0.38 ? 8 : 0;
-      const brightBoost = gray[i] > 135 ? (gray[i] - 135) * 0.18 : 0;
-      score[i] = c * 1.15 + bandBoost + brightBoost;
+      const bandBoost = y > 0.45 ? 20 : y > 0.32 ? 12 : 0;
+      const brightBoost = gray[i] > 120 ? (gray[i] - 120) * 0.22 : 0;
+      score[i] = c * 1.25 + bandBoost + brightBoost;
       sum += score[i];
       sumSq += score[i] * score[i];
     }
@@ -698,14 +698,12 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    // 1. Serve UI Interface Dashboard
     if (url.pathname === '/' || url.pathname === '/index.html') {
       return new Response(HTML_CONTENT, {
         headers: { 'content-type': 'text/html;charset=UTF-8' },
       });
     }
 
-    // 2. Multi-Part Binary Processing Endpoint
     if (url.pathname === '/api/inpainting' && request.method === 'POST') {
       try {
         const formData = await request.formData();
@@ -720,14 +718,14 @@ export default {
         const maskBuffer = await maskFile.arrayBuffer();
 
         const response = await env.AI.run('@cf/runwayml/stable-diffusion-v1-5-inpainting', {
-  prompt: 'seamless background texture fill, empty space, blended edges, no characters, high quality',
-  negative_prompt: 'text, words, letters, numbers, typography, font, watermark, logo, title, credits, billing block, signature, caption, subtitle, UI, character, person, figure, man, woman, human, floating objects, disjointed textures, blurred edges, smudges, poorly drawn, oversaturated',
-  image: [...new Uint8Array(imageBuffer)],
-  mask: [...new Uint8Array(maskBuffer)],
-  guidance: 12.5,
-  num_steps: 20,
-  strength: 0.92
-});
+          prompt: 'seamless background texture fill, empty clear space, smooth blending, high quality',
+          negative_prompt: 'text, words, letters, numbers, digits, font, typography, script, symbols, characters, writing, watermark, signature, label, caption, subtitle, graffiti, stamps, markings, any text elements',
+          image: [...new Uint8Array(imageBuffer)],
+          mask: [...new Uint8Array(maskBuffer)],
+          guidance: 14.0,
+          num_steps: 25,
+          strength: 0.95
+        });
 
         return new Response(response, {
           headers: { 'content-type': 'image/jpeg' },
@@ -738,7 +736,6 @@ export default {
       }
     }
 
-    // Default Fallback Response
     return new Response('Resource Route Node Not Found', { status: 404 });
   }
 };
