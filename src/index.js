@@ -718,13 +718,12 @@ export default {
 
         const imageBuffer = await imageFile.arrayBuffer();
         const maskBuffer = await maskFile.arrayBuffer();
-
-        // Execution of the Neural Node using context module parameters
-        const response = await env.AI.run('@cf/stabilityai/stable-diffusion-xl-inpainting', {
-          prompt: 'seamless background texture fill, clear poster graphics backdrop, high quality, text completely removed',
-          image: [...new Uint8Array(imageBuffer)],
-          mask: [...new Uint8Array(maskBuffer)],
-        });
+// Updated working catalog path
+const response = await env.AI.run('@cf/runwayml/stable-diffusion-v1-5-inpainting', {
+  prompt: 'seamless background texture fill, clear poster graphics backdrop, high quality, text completely removed',
+  image: [...new Uint8Array(imageBuffer)],
+  mask: [...new Uint8Array(maskBuffer)],
+});
 
         return new Response(response, {
           headers: { 'content-type': 'image/jpeg' },
