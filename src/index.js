@@ -828,28 +828,50 @@ export default {
         const maskFile = formData.get('mask');
 
         if (!imageFile || !maskFile) {
-          return new Response('Missing payload targets (image or mask).', { status: 400 });
+          return new Response('Missing image or mask file.', { status: 400 });
         }
 
         const imageBuffer = await imageFile.arrayBuffer();
         const maskBuffer = await maskFile.arrayBuffer();
 
-        const response = await env.AI.run('@cf/runwayml/stable-diffusion-v1-5-inpainting', {
-          prompt: 'seamless background texture fill, empty clear space, smooth blending, high quality, coherent background',
-          negative_prompt: 'text, words, letters, numbers, digits, font, typography, script, symbols, characters, writing, watermark, signature, label, caption, subtitle, graffiti, stamps, markings, any text elements, glitches, artifacts, low quality',
-          image: [...new Uint8Array(imageBuffer)],
-          mask: [...new Uint8Array(maskBuffer)],
-          guidance: 15.0,
-          num_steps: 25,
-          strength: 0.95
-        });
+        const imageArray = new Uint8Array(imageBuffer);
+        const maskArray = new Uint8Array(maskBuffer);
 
-        return new Response(response, {
-          headers: { 'content-type': 'image/jpeg' },
-        });
+        console.log(`Image: ${imageArray.length} bytes, Mask: ${maskArray.length} bytes`);
+
+        try {
+          const response = await env.AI.run('@cf/runwayml/stable-diffusion-v1-5-inpainting', {
+            prompt: 'seamless background texture, natural fill, smooth blending, high quality',
+            negative_prompt: 'text, words, watermark, artifacts, blurry, low quality',
+            image: imageArray,
+            mask: maskArray,
+            guidance: 12.5,
+            num_steps: 20,
+            strength: 0.9
+          });
+
+          return new Response(response, {
+            headers: { 'content-type': 'image/jpeg' },
+          });
+        } catch (aiError) {
+          console.error('AI Error:', aiError.message);
+          const msg = aiError.message || '';
+          
+          if (msg.includes('rate') || msg.includes('quota')) {
+            return new Response('Rate limited or quota exceeded. Try again in a moment.', { status: 429 });
+          }
+          if (msg.includes('size') || msg.includes('dimension')) {
+            return new Response('Image/mask size error. Both must be 500x750.', { status: 400 });
+          }
+          if (msg.includes('timeout')) {
+            return new Response('Inpainting timeout. Try again.', { status: 408 });
+          }
+          throw aiError;
+        }
 
       } catch (error) {
-        return new Response(error.message || 'Internal AI Model Framework Error', { status: 500 });
+        console.error('Endpoint error:', error);
+        return new Response(`Inpainting error: ${error.message || 'Unknown error'}`, { status: 500 });
       }
     }
 
