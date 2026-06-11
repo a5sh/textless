@@ -1,11 +1,11 @@
-// src/index.js
+// src/index.js - Advanced Textless Poster Generator with Multi-Scale Ensemble Masking
 
 const HTML_CONTENT = String.raw`<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Textless Poster Generator</title>
+<title>Advanced Textless Poster Generator</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <style>
   :root { color-scheme: light; }
@@ -82,26 +82,38 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     color: #64748b;
     margin-bottom: 0.5rem;
   }
-  .result-pair {
+  .controls {
     display: flex;
+    gap: 1rem;
+    margin-top: 1rem;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .control-group {
+    display: flex;
+    align-items: center;
     gap: 0.5rem;
-    margin-bottom: 1rem;
   }
-  .result-pair > div {
-    flex: 1;
+  .control-group label {
+    font-size: 0.85rem;
+    color: #475569;
   }
-  .result-pair p {
-    font-size: 0.7rem;
-    margin-bottom: 0.25rem;
+  .control-group input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+  }
+  .control-group input[type="range"] {
+    width: 120px;
   }
 </style>
 </head>
 <body class="min-h-screen text-slate-900 p-6 md:p-8 font-sans">
   <div class="max-w-7xl mx-auto bg-white/90 backdrop-blur border border-slate-200 rounded-3xl shadow-xl p-6 md:p-8">
     <div class="text-center mb-7">
-      <h1 class="text-3xl md:text-4xl font-black tracking-tight text-slate-900">Textless Poster Generator</h1>
+      <h1 class="text-3xl md:text-4xl font-black tracking-tight text-slate-900">Advanced Textless Poster</h1>
       <p class="mt-2 text-slate-600">
-        Triple-algorithm detection with parallel inpainting. Compare 3 different approaches simultaneously.
+        Multi-scale ensemble masking with adaptive thresholding and optional dual-pass inpainting.
       </p>
     </div>
 
@@ -117,12 +129,24 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
         <canvas id="imgCanvas" width="500" height="750"></canvas>
       </div>
 
+      <div class="controls">
+        <div class="control-group">
+          <label for="dualPass">Dual-Pass Inpainting:</label>
+          <input type="checkbox" id="dualPass" checked />
+        </div>
+        <div class="control-group">
+          <label for="aggressive">Aggression:</label>
+          <input type="range" id="aggressive" min="0.5" max="2" step="0.1" value="1" />
+          <span id="aggressiveVal">1.0x</span>
+        </div>
+      </div>
+
       <div class="w-full mt-5 grid gap-3 md:grid-cols-2">
         <button
           id="generateBtn"
           class="w-full px-6 py-3.5 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 disabled:bg-indigo-300 transition shadow-md shadow-indigo-200"
         >
-          Generate 3 Results
+          Generate Enhanced Result
         </button>
 
         <button
@@ -135,7 +159,7 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
 
       <div id="loading" class="hidden mt-5 text-indigo-700 font-semibold flex items-center gap-3">
         <div class="status-dot"></div>
-        <span id="loadingText">Detecting text with 3 algorithms...</span>
+        <span id="loadingText">Processing...</span>
       </div>
 
       <div id="errorMsg" class="hidden mt-4 text-red-600 font-semibold text-sm text-center max-w-2xl"></div>
@@ -143,51 +167,21 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
       <div id="previewSection" class="hidden w-full mt-8">
         <div class="results-grid">
           <div class="result-card">
-            <h3>Algorithm A: Contrast</h3>
-            <div class="result-pair">
-              <div>
-                <p>Mask</p>
-                <canvas id="maskA" width="500" height="750" class="mini-preview mx-auto"></canvas>
-              </div>
-            </div>
-            <p>High-contrast text detection</p>
-            <p>Aggressive on light text</p>
-            <div>
-              <p style="margin-top: 1rem;">Result</p>
-              <img id="resultA" class="preview-image mini-preview mx-auto" alt="Algorithm A result" />
-            </div>
+            <h3>Ensemble Mask</h3>
+            <p>Multi-scale, adaptive, combined</p>
+            <canvas id="maskEnsemble" width="500" height="750" class="mini-preview mx-auto"></canvas>
           </div>
 
           <div class="result-card">
-            <h3>Algorithm B: Edge (Sobel)</h3>
-            <div class="result-pair">
-              <div>
-                <p>Mask</p>
-                <canvas id="maskB" width="500" height="750" class="mini-preview mx-auto"></canvas>
-              </div>
-            </div>
-            <p>Edge magnitude detection</p>
-            <p>Crisp text boundaries</p>
-            <div>
-              <p style="margin-top: 1rem;">Result</p>
-              <img id="resultB" class="preview-image mini-preview mx-auto" alt="Algorithm B result" />
-            </div>
+            <h3>Refined Mask</h3>
+            <p>Post-processed with morphology</p>
+            <canvas id="maskRefined" width="500" height="750" class="mini-preview mx-auto"></canvas>
           </div>
 
           <div class="result-card">
-            <h3>Algorithm C: Brightness Diff</h3>
-            <div class="result-pair">
-              <div>
-                <p>Mask</p>
-                <canvas id="maskC" width="500" height="750" class="mini-preview mx-auto"></canvas>
-              </div>
-            </div>
-            <p>Local brightness variance</p>
-            <p>Good for varied backgrounds</p>
-            <div>
-              <p style="margin-top: 1rem;">Result</p>
-              <img id="resultC" class="preview-image mini-preview mx-auto" alt="Algorithm C result" />
-            </div>
+            <h3>Final Result</h3>
+            <p>Text-free poster</p>
+            <img id="resultFinal" class="preview-image mini-preview mx-auto" alt="Final result" />
           </div>
         </div>
       </div>
@@ -210,12 +204,19 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
   const loadingTextEl = document.getElementById('loadingText');
   const errorMsgEl = document.getElementById('errorMsg');
   const previewSectionEl = document.getElementById('previewSection');
+  const dualPassEl = document.getElementById('dualPass');
+  const aggressiveEl = document.getElementById('aggressive');
+  const aggressiveValEl = document.getElementById('aggressiveVal');
 
   const imgCanvas = document.getElementById('imgCanvas');
   const imgCtx = imgCanvas.getContext('2d', { willReadFrequently: true });
 
   let currentFile = null;
   let isProcessing = false;
+
+  aggressiveEl.addEventListener('input', () => {
+    aggressiveValEl.textContent = aggressiveEl.value + 'x';
+  });
 
   function showError(message) {
     errorMsgEl.textContent = message;
@@ -227,7 +228,7 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     errorMsgEl.classList.add('hidden');
   }
 
-  function setLoading(state, text = 'Detecting text regions...') {
+  function setLoading(state, text = 'Processing...') {
     loadingTextEl.textContent = text;
     loadingEl.classList.toggle('hidden', !state);
     generateBtn.disabled = state;
@@ -324,6 +325,12 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     return out;
   }
 
+  function gaussianBlur(src, width, height, radius) {
+    let result = src;
+    for (let i = 0; i < 2; i++) result = boxBlur(result, width, height, Math.ceil(radius / 2));
+    return result;
+  }
+
   function sobelMagnitude(gray, width, height) {
     const out = new Float32Array(width * height);
     let sum = 0, sumSq = 0, count = 0;
@@ -350,24 +357,50 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     return { map: out, mean, std: Math.sqrt(variance) };
   }
 
+  function laplacian(gray, width, height) {
+    const out = new Float32Array(width * height);
+    for (let y = 1; y < height - 1; y++) {
+      const row = y * width;
+      for (let x = 1; x < width - 1; x++) {
+        const idx = row + x;
+        const center = gray[idx];
+        const sum = -4 * center
+          + gray[idx - 1] + gray[idx + 1]
+          + gray[idx - width] + gray[idx + width];
+        out[idx] = Math.abs(sum);
+      }
+    }
+    return out;
+  }
+
+  function adaptiveThreshold(gray, width, height, blockSize = 31, constant = 5) {
+    const half = Math.floor(blockSize / 2);
+    const blur = boxBlur(gray, width, height, half);
+    const out = new Uint8Array(width * height);
+
+    for (let i = 0; i < gray.length; i++) {
+      out[i] = gray[i] > blur[i] - constant ? 1 : 0;
+    }
+    return out;
+  }
+
   function thresholdMap(map, width, height, threshold) {
     const out = new Uint8Array(width * height);
     for (let i = 0; i < map.length; i++) out[i] = map[i] >= threshold ? 1 : 0;
     return out;
   }
 
-  function dilate(mask, width, height, passes = 1) {
+  function dilate(mask, width, height, passes = 1, size = 1) {
     let cur = mask;
     for (let pass = 0; pass < passes; pass++) {
       const next = new Uint8Array(width * height);
-      for (let y = 1; y < height - 1; y++) {
+      for (let y = size; y < height - size; y++) {
         const row = y * width;
-        for (let x = 1; x < width - 1; x++) {
+        for (let x = size; x < width - size; x++) {
           let on = 0;
-          for (let dy = -1; dy <= 1 && !on; dy++) {
-            const ny = y + dy;
-            const nRow = ny * width;
-            for (let dx = -1; dx <= 1; dx++) {
+          for (let dy = -size; dy <= size && !on; dy++) {
+            const nRow = (y + dy) * width;
+            for (let dx = -size; dx <= size; dx++) {
               if (cur[nRow + x + dx]) { on = 1; break; }
             }
           }
@@ -379,18 +412,17 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     return cur;
   }
 
-  function erode(mask, width, height, passes = 1) {
+  function erode(mask, width, height, passes = 1, size = 1) {
     let cur = mask;
     for (let pass = 0; pass < passes; pass++) {
       const next = new Uint8Array(width * height);
-      for (let y = 1; y < height - 1; y++) {
+      for (let y = size; y < height - size; y++) {
         const row = y * width;
-        for (let x = 1; x < width - 1; x++) {
+        for (let x = size; x < width - size; x++) {
           let keep = 1;
-          for (let dy = -1; dy <= 1 && keep; dy++) {
-            const ny = y + dy;
-            const nRow = ny * width;
-            for (let dx = -1; dx <= 1; dx++) {
+          for (let dy = -size; dy <= size && keep; dy++) {
+            const nRow = (y + dy) * width;
+            for (let dx = -size; dx <= size; dx++) {
               if (!cur[nRow + x + dx]) { keep = 0; break; }
             }
           }
@@ -402,12 +434,12 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     return cur;
   }
 
-  function close(mask, width, height, passes = 1) {
-    return erode(dilate(mask, width, height, passes), width, height, passes);
+  function close(mask, width, height, passes = 1, size = 1) {
+    return erode(dilate(mask, width, height, passes, size), width, height, passes, size);
   }
 
-  function open(mask, width, height, passes = 1) {
-    return dilate(erode(mask, width, height, passes), width, height, passes);
+  function open(mask, width, height, passes = 1, size = 1) {
+    return dilate(erode(mask, width, height, passes, size), width, height, passes, size);
   }
 
   function extractComponents(binary, width, height) {
@@ -476,27 +508,61 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     return mask;
   }
 
-  function buildMaskFromScoreMap(scoreMap, width, height, threshold, minAreaRatio = 0.00008) {
-    const binary = thresholdMap(scoreMap, width, height, threshold);
-    let mask = close(open(binary, width, height, 1), width, height, 1);
-
-    const comps = extractComponents(mask, width, height);
+  function smartComponentFilter(comps, width, height, aggression = 1.0) {
+    const minAreaRatio = 0.00006 * aggression;
+    const maxAreaRatio = 0.18 / aggression;
     const keep = [];
+
     for (const c of comps) {
       const boxW = c.maxX - c.minX + 1;
       const boxH = c.maxY - c.minY + 1;
       const areaRatio = c.area / (width * height);
       const aspect = boxW / Math.max(1, boxH);
+      const circularity = (4 * Math.PI * c.area) / Math.pow(boxW + boxH, 2);
+
       if (areaRatio < minAreaRatio) continue;
-      if (areaRatio > 0.16) continue;
-      if (boxW < 4 || boxH < 3) continue;
-      if (aspect < 0.08 && boxH > height * 0.12) continue;
+      if (areaRatio > maxAreaRatio) continue;
+      if (boxW < 3 || boxH < 2) continue;
+
+      // Reject overly square-ish (likely not text)
+      if (aspect > 1.3 && aspect < 0.77 && circularity < 0.3) continue;
+
+      // Reject ultra-thin lines
+      if (aspect > 20 || aspect < 0.05) continue;
+
       keep.push(c);
     }
 
-    mask = fillComponentBoxes(keep, width, height, 8, 6);
-    mask = close(mask, width, height, 2);
-    return mask;
+    return keep;
+  }
+
+  function maskToFloat(mask, width, height) {
+    const out = new Float32Array(width * height);
+    for (let i = 0; i < mask.length; i++) out[i] = mask[i] ? 1.0 : 0.0;
+    return out;
+  }
+
+  function combineMasks(maskA, maskB, maskC, width, height, method = 'max') {
+    const out = new Uint8Array(width * height);
+    if (method === 'max') {
+      for (let i = 0; i < width * height; i++) {
+        out[i] = Math.max(maskA[i], maskB[i], maskC[i]);
+      }
+    } else if (method === 'weighted') {
+      // Weight: A=0.25, B=0.30, C=0.45 (C was best)
+      for (let i = 0; i < width * height; i++) {
+        out[i] = (maskA[i] * 0.25 + maskB[i] * 0.30 + maskC[i] * 0.45) > 0.4 ? 1 : 0;
+      }
+    }
+    return out;
+  }
+
+  function refineComponentMask(mask, width, height) {
+    let refined = open(mask, width, height, 1, 1);
+    refined = close(refined, width, height, 2, 1);
+    refined = dilate(refined, width, height, 1, 1);
+    refined = erode(refined, width, height, 1, 1);
+    return refined;
   }
 
   function drawMaskToCanvas(mask, width, height, canvas) {
@@ -513,55 +579,107 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     ctx.putImageData(imageData, 0, 0);
   }
 
-  // Algorithm A: Contrast-based
-  function detectorA(gray, width, height) {
-    const blur = boxBlur(gray, width, height, 6);
-    const score = new Float32Array(width * height);
-    let sum = 0, sumSq = 0;
+  // Advanced detector: Multi-scale Contrast Detection
+  function detectorA_Advanced(gray, width, height, aggression) {
+    const scales = [4, 8, 16];
+    const scores = [];
 
+    for (const scale of scales) {
+      const blur = boxBlur(gray, width, height, scale);
+      const scaleScore = new Float32Array(width * height);
+      for (let i = 0; i < scaleScore.length; i++) {
+        scaleScore[i] = Math.abs(gray[i] - blur[i]);
+      }
+      scores.push(scaleScore);
+    }
+
+    const combined = new Float32Array(width * height);
+    for (let i = 0; i < combined.length; i++) {
+      combined[i] = Math.max(scores[0][i], scores[1][i] * 0.8, scores[2][i] * 0.6);
+    }
+
+    let sum = 0, sumSq = 0;
+    for (let i = 0; i < combined.length; i++) {
+      sum += combined[i];
+      sumSq += combined[i] * combined[i];
+    }
+
+    const mean = sum / combined.length;
+    const std = Math.sqrt(Math.max(0, sumSq / combined.length - mean * mean));
+    const thresh = mean + std * (1.2 / aggression);
+
+    const binary = thresholdMap(combined, width, height, thresh);
+    let mask = close(open(binary, width, height, 1, 1), width, height, 2, 1);
+
+    const comps = extractComponents(mask, width, height);
+    const keep = smartComponentFilter(comps, width, height, aggression);
+    mask = fillComponentBoxes(keep, width, height, 6, 4);
+    mask = close(mask, width, height, 2, 1);
+    return mask;
+  }
+
+  // Advanced detector: Multi-scale Edge Detection
+  function detectorB_Advanced(gray, width, height, aggression) {
+    const sobel = sobelMagnitude(gray, width, height);
+    const laplace = laplacian(gray, width, height);
+
+    const combined = new Float32Array(width * height);
+    for (let i = 0; i < combined.length; i++) {
+      combined[i] = sobel.map[i] * 0.6 + laplace[i] * 0.4;
+    }
+
+    const blurred = boxBlur(combined, width, height, 3);
+
+    let sum = 0, sumSq = 0;
+    for (let i = 0; i < blurred.length; i++) {
+      sum += blurred[i];
+      sumSq += blurred[i] * blurred[i];
+    }
+
+    const mean = sum / blurred.length;
+    const std = Math.sqrt(Math.max(0, sumSq / blurred.length - mean * mean));
+    const thresh = mean + std * (0.95 / aggression);
+
+    const binary = thresholdMap(blurred, width, height, thresh);
+    let mask = close(open(binary, width, height, 1, 1), width, height, 1, 1);
+
+    const comps = extractComponents(mask, width, height);
+    const keep = smartComponentFilter(comps, width, height, aggression);
+    mask = fillComponentBoxes(keep, width, height, 5, 3);
+    mask = close(mask, width, height, 1, 1);
+    return mask;
+  }
+
+  // Advanced detector: Adaptive Multi-scale Brightness
+  function detectorC_Advanced(gray, width, height, aggression) {
+    const blur8 = boxBlur(gray, width, height, 8);
+    const blur16 = boxBlur(gray, width, height, 16);
+
+    const score = new Float32Array(width * height);
     for (let i = 0; i < score.length; i++) {
-      const c = Math.abs(gray[i] - blur[i]);
-      const y = Math.floor(i / width) / height;
-      const bandBoost = y > 0.45 ? 20 : y > 0.32 ? 12 : 0;
-      const brightBoost = gray[i] > 120 ? (gray[i] - 120) * 0.22 : 0;
-      score[i] = c * 1.25 + bandBoost + brightBoost;
+      const d1 = Math.abs(gray[i] - blur8[i]);
+      const d2 = Math.abs(gray[i] - blur16[i]);
+      score[i] = Math.max(d1 * 1.1, d2 * 0.9);
+    }
+
+    let sum = 0, sumSq = 0;
+    for (let i = 0; i < score.length; i++) {
       sum += score[i];
       sumSq += score[i] * score[i];
     }
 
     const mean = sum / score.length;
-    const std = Math.sqrt(Math.max(0, (sumSq / score.length) - mean * mean));
-    const thresh = mean + std * 1.35;
-    return buildMaskFromScoreMap(score, width, height, thresh);
-  }
+    const std = Math.sqrt(Math.max(0, sumSq / score.length - mean * mean));
+    const thresh = mean + std * (1.0 / aggression);
 
-  // Algorithm B: Sobel Edge Detection
-  function detectorB(gray, width, height) {
-    const sob = sobelMagnitude(gray, width, height);
-    const blursob = boxBlur(sob.map, width, height, 2);
-    const thresh = sob.mean + sob.std * 1.1;
-    return buildMaskFromScoreMap(blursob, width, height, thresh, 0.0001);
-  }
+    const binary = thresholdMap(score, width, height, thresh);
+    let mask = close(open(binary, width, height, 1, 1), width, height, 2, 1);
 
-  // Algorithm C: Brightness Differential
-  function detectorC(gray, width, height) {
-    const blur = boxBlur(gray, width, height, 12);
-    const score = new Float32Array(width * height);
-    let sum = 0, sumSq = 0;
-
-    for (let i = 0; i < score.length; i++) {
-      const diff = Math.abs(gray[i] - blur[i]);
-      const y = Math.floor(i / width) / height;
-      const bandBoost = y > 0.50 ? 15 : y > 0.35 ? 8 : 0;
-      score[i] = diff * 1.0 + bandBoost;
-      sum += score[i];
-      sumSq += score[i] * score[i];
-    }
-
-    const mean = sum / score.length;
-    const std = Math.sqrt(Math.max(0, (sumSq / score.length) - mean * mean));
-    const thresh = mean + std * 1.2;
-    return buildMaskFromScoreMap(score, width, height, thresh, 0.00005);
+    const comps = extractComponents(mask, width, height);
+    const keep = smartComponentFilter(comps, width, height, aggression);
+    mask = fillComponentBoxes(keep, width, height, 7, 5);
+    mask = close(mask, width, height, 3, 1);
+    return mask;
   }
 
   uploadEl.addEventListener('change', async (e) => {
@@ -595,29 +713,31 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
     isProcessing = true;
     clearError();
 
+    const aggression = parseFloat(aggressiveEl.value);
+    const useDualPass = dualPassEl.checked;
+
     try {
-      setLoading(true, 'Detecting text with Algorithm A (Contrast)...');
+      setLoading(true, 'Building ensemble mask (multi-scale detection)...');
       const sourceData = imgCtx.getImageData(0, 0, W, H);
       const gray = makeGray(sourceData);
 
-      const maskA = detectorA(gray, W, H);
-      drawMaskToCanvas(maskA, W, H, document.getElementById('maskA'));
+      const maskA = detectorA_Advanced(gray, W, H, aggression);
+      const maskB = detectorB_Advanced(gray, W, H, aggression);
+      const maskC = detectorC_Advanced(gray, W, H, aggression);
 
-      setLoading(true, 'Detecting text with Algorithm B (Sobel)...');
-      const maskB = detectorB(gray, W, H);
-      drawMaskToCanvas(maskB, W, H, document.getElementById('maskB'));
+      const ensemble = combineMasks(maskA, maskB, maskC, W, H, 'weighted');
+      drawMaskToCanvas(ensemble, W, H, document.getElementById('maskEnsemble'));
 
-      setLoading(true, 'Detecting text with Algorithm C (Brightness Diff)...');
-      const maskC = detectorC(gray, W, H);
-      drawMaskToCanvas(maskC, W, H, document.getElementById('maskC'));
+      setLoading(true, 'Refining mask with advanced morphology...');
+      const refined = refineComponentMask(ensemble, W, H);
+      drawMaskToCanvas(refined, W, H, document.getElementById('maskRefined'));
 
-      setLoading(true, 'Running 3 inpainting processes in parallel...');
+      setLoading(true, useDualPass ? 'Running dual-pass inpainting...' : 'Running inpainting...');
 
       const imageBlob = await new Promise(resolve => imgCanvas.toBlob(resolve, 'image/jpeg', 0.92));
 
-      const processInpaint = async (maskCanvas, resultImgId) => {
+      const inpaintOnce = async (maskCanvas) => {
         const maskBlob = await canvasToBlob(maskCanvas, 'image/png');
-
         const formData = new FormData();
         formData.append('image', imageBlob);
         formData.append('mask', maskBlob);
@@ -648,17 +768,28 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
         const paddedImg = await imageBlobToImage(padding);
 
         cleanCtx.drawImage(resultImg, -PAD_X, -PAD_Y, INFER_W, INFER_H);
-        const finalBlob = await canvasToBlob(cleanCanvas, 'image/jpeg', 0.95);
-        document.getElementById(resultImgId).src = URL.createObjectURL(finalBlob);
+        return await canvasToBlob(cleanCanvas, 'image/jpeg', 0.95);
       };
 
-      // Run all 3 inpaints in parallel
-      await Promise.all([
-        processInpaint(document.getElementById('maskA'), 'resultA'),
-        processInpaint(document.getElementById('maskB'), 'resultB'),
-        processInpaint(document.getElementById('maskC'), 'resultC')
-      ]);
+      let finalBlob = await inpaintOnce(document.getElementById('maskRefined'));
 
+      if (useDualPass) {
+        setLoading(true, 'Second pass: refining details...');
+        const secondPassImg = await imageBlobToImage(finalBlob);
+        const secondCanvas = document.createElement('canvas');
+        secondCanvas.width = W;
+        secondCanvas.height = H;
+        const secondCtx = secondCanvas.getContext('2d');
+        secondCtx.drawImage(secondPassImg, 0, 0);
+
+        // Lighter mask for second pass
+        const refinedLight = erode(refined, W, H, 1, 1);
+        drawMaskToCanvas(refinedLight, W, H, document.getElementById('maskRefined'));
+
+        finalBlob = await inpaintOnce(document.getElementById('maskRefined'));
+      }
+
+      document.getElementById('resultFinal').src = URL.createObjectURL(finalBlob);
       previewSectionEl.classList.remove('hidden');
     } catch (err) {
       showError(err.message);
@@ -704,12 +835,12 @@ export default {
         const maskBuffer = await maskFile.arrayBuffer();
 
         const response = await env.AI.run('@cf/runwayml/stable-diffusion-v1-5-inpainting', {
-          prompt: 'seamless background texture fill, empty clear space, smooth blending, high quality',
-          negative_prompt: 'text, words, letters, numbers, digits, font, typography, script, symbols, characters, writing, watermark, signature, label, caption, subtitle, graffiti, stamps, markings, any text elements',
+          prompt: 'seamless background texture fill, empty clear space, smooth blending, high quality, coherent background',
+          negative_prompt: 'text, words, letters, numbers, digits, font, typography, script, symbols, characters, writing, watermark, signature, label, caption, subtitle, graffiti, stamps, markings, any text elements, glitches, artifacts, low quality',
           image: [...new Uint8Array(imageBuffer)],
           mask: [...new Uint8Array(maskBuffer)],
-          guidance: 14.0,
-          num_steps: 20,
+          guidance: 15.0,
+          num_steps: 25,
           strength: 0.95
         });
 
