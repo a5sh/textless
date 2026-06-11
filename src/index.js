@@ -742,14 +742,23 @@ const HTML_CONTENT = String.raw`<!DOCTYPE html>
         formData.append('image', imageBlob);
         formData.append('mask', maskBlob);
 
+        console.log('📤 Sending inpainting request. Image:', imageBlob.size, 'bytes, Mask:', maskBlob.size, 'bytes');
+
         const response = await fetch('/api/inpainting', {
           method: 'POST',
           body: formData
         });
 
-        if (!response.ok) throw new Error('Inpainting failed: ' + response.status);
+        console.log('📥 Response status:', response.status);
+
+        if (!response.ok) {
+          const text = await response.text();
+          console.error('❌ API Error response:', text);
+          throw new Error(`Inpainting failed (${response.status}): ${text}`);
+        }
 
         const resultBlob = await response.blob();
+        console.log('✅ Got result blob:', resultBlob.size, 'bytes');
         const resultImg = await imageBlobToImage(resultBlob);
 
         const cleanCanvas = document.createElement('canvas');
@@ -821,6 +830,40 @@ export default {
       });
     }
 
+    if (url.pathname === '/api/health') {
+      try {
+        console.log('[Health Check] Testing AI binding...');
+        
+        if (!env.AI) {
+          return new Response(JSON.stringify({
+            status: 'ERROR',
+            message: 'AI binding not available. Check: 1) Paid Cloudflare plan, 2) [ai] in wrangler.toml, 3) Run: wrangler deploy'
+          }), { 
+            status: 503,
+            headers: { 'content-type': 'application/json' }
+          });
+        }
+
+        return new Response(JSON.stringify({
+          status: 'OK',
+          message: 'AI binding is accessible',
+          timestamp: new Date().toISOString()
+        }), { 
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+
+      } catch (error) {
+        return new Response(JSON.stringify({
+          status: 'ERROR',
+          message: error.message
+        }), { 
+          status: 500,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+    }
+
     if (url.pathname === '/api/inpainting' && request.method === 'POST') {
       try {
         const formData = await request.formData();
@@ -828,7 +871,7 @@ export default {
         const maskFile = formData.get('mask');
 
         if (!imageFile || !maskFile) {
-          return new Response('Missing image or mask file.', { status: 400 });
+          return new Response('ERROR: Missing image or mask file.', { status: 400 });
         }
 
         const imageBuffer = await imageFile.arrayBuffer();
@@ -837,9 +880,16 @@ export default {
         const imageArray = new Uint8Array(imageBuffer);
         const maskArray = new Uint8Array(maskBuffer);
 
-        console.log(`Image: ${imageArray.length} bytes, Mask: ${maskArray.length} bytes`);
+        console.log(`[Inpainting] Image: ${imageArray.length} bytes, Mask: ${maskArray.length} bytes`);
+
+        if (imageArray.length < 1000 || maskArray.length < 1000) {
+          console.error('[Inpainting] Data too small!');
+          return new Response('ERROR: Image or mask data too small. Data corruption suspected.', { status: 400 });
+        }
 
         try {
+          console.log('[Inpainting] Calling AI model...');
+          
           const response = await env.AI.run('@cf/runwayml/stable-diffusion-v1-5-inpainting', {
             prompt: 'seamless background texture, natural fill, smooth blending, high quality',
             negative_prompt: 'text, words, watermark, artifacts, blurry, low quality',
@@ -850,28 +900,38 @@ export default {
             strength: 0.9
           });
 
+          console.log('[Inpainting] Success! Response size:', response.length || 'unknown');
           return new Response(response, {
             headers: { 'content-type': 'image/jpeg' },
           });
+
         } catch (aiError) {
-          console.error('AI Error:', aiError.message);
-          const msg = aiError.message || '';
+          const errMsg = aiError.message || aiError.toString();
+          const errStack = aiError.stack || '';
           
-          if (msg.includes('rate') || msg.includes('quota')) {
-            return new Response('Rate limited or quota exceeded. Try again in a moment.', { status: 429 });
+          console.error('[AI Model Error]', errMsg);
+          console.error('[Stack]', errStack);
+          
+          // Return full error details to client
+          let userMessage = `AI ERROR: ${errMsg}`;
+          
+          if (errMsg.includes('not found') || errMsg.includes('undefined') || errMsg.includes('not a function')) {
+            userMessage = `ERROR: AI binding not configured. Ensure [ai] section exists in wrangler.toml`;
+          } else if (errMsg.includes('rate') || errMsg.includes('quota')) {
+            userMessage = `ERROR: Rate limited. Wait 1 minute and try again.`;
+          } else if (errMsg.includes('timeout')) {
+            userMessage = `ERROR: Request timeout. Try with smaller image.`;
+          } else if (errMsg.includes('size') || errMsg.includes('shape')) {
+            userMessage = `ERROR: Invalid image/mask dimensions.`;
           }
-          if (msg.includes('size') || msg.includes('dimension')) {
-            return new Response('Image/mask size error. Both must be 500x750.', { status: 400 });
-          }
-          if (msg.includes('timeout')) {
-            return new Response('Inpainting timeout. Try again.', { status: 408 });
-          }
-          throw aiError;
+          
+          return new Response(userMessage, { status: 503 });
         }
 
       } catch (error) {
-        console.error('Endpoint error:', error);
-        return new Response(`Inpainting error: ${error.message || 'Unknown error'}`, { status: 500 });
+        const msg = error.message || error.toString();
+        console.error('[Request Handler Error]', msg);
+        return new Response(`ERROR: ${msg}`, { status: 500 });
       }
     }
 
